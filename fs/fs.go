@@ -1,0 +1,564 @@
+// Copyright 2023 Google Inc. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+package fs
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"io/ioutil"
+	"log"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"syscall"
+
+	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/hanwen/go-fuse/v2/fs"
+	"github.com/hanwen/go-fuse/v2/fuse"
+)
+
+type gitBlobNode struct {
+	fs.Inode
+
+	root *gitFSRoot
+
+	// mutable metadata
+	mu         sync.Mutex
+	mode       filemode.FileMode
+	size       uint64
+	id         plumbing.Hash
+	linkTarget []byte
+
+	// If opened, filedesc for the open file. Also protected by mu
+	backingFile string
+	backingFd   int
+	openCount   int
+}
+
+var _ = (fs.NodeOpener)((*gitBlobNode)(nil))
+
+func (n *gitBlobNode) Open(ctx context.Context, flags uint32) (fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
+	// We have to always expand the file, because of {open(rdwr), setsize(sz=0)}.
+	if err := n.materialize(); err != nil {
+		return nil, 0, syscall.EIO
+	}
+
+	fd, err := syscall.Open(n.backingFile, int(flags), 0777)
+	if err != nil {
+		return nil, 0, err.(syscall.Errno)
+	}
+
+	fh = &openBlob{
+		FileAllOps: fs.NewLoopbackFile(fd).(FileAllOps),
+		flags:      flags,
+	}
+
+	return fh, 0, 0
+}
+
+func (n *gitBlobNode) setSize(sz uint64) error {
+	if err := n.materialize(); err != nil {
+		return err
+	}
+
+	if err := os.Truncate(n.backingFile, int64(sz)); err != nil {
+		return err
+	}
+
+	if err := n.saveToGit(); err != nil {
+		return err
+	}
+
+	n.unmaterialize()
+	return nil
+}
+
+var _ = (fs.NodeSetattrer)((*gitBlobNode)(nil))
+
+func (n *gitBlobNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
+	if in.Valid&fuse.FATTR_SIZE != 0 {
+		if err := n.setSize(in.Size); err != nil {
+			return syscall.EIO
+		}
+	}
+	return n.Getattr(ctx, f, out)
+}
+
+// expandBlob reads the blob from Git and saves into CAS.
+func (n *gitBlobNode) expandBlob() error {
+	obj, err := n.root.repo.BlobObject(n.id)
+	if err != nil {
+		return err
+	}
+	rc, err := obj.Reader()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	data, err := ioutil.ReadAll(rc)
+	if err != nil {
+		return err
+	}
+
+	return n.root.cas.Write(n.id, data)
+}
+
+var _ = (fs.NodeGetattrer)((*gitBlobNode)(nil))
+
+func (n *gitBlobNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	out.Size = n.size
+	out.Mode = uint32(n.mode)
+
+	return 0
+}
+
+type FileAllOps interface {
+	Release(ctx context.Context) syscall.Errno
+	Getattr(ctx context.Context, out *fuse.AttrOut) syscall.Errno
+	Read(ctx context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno)
+	Write(ctx context.Context, data []byte, off int64) (written uint32, errno syscall.Errno)
+	Getlk(ctx context.Context, owner uint64, lk *fuse.FileLock, flags uint32, out *fuse.FileLock) syscall.Errno
+	Setlk(ctx context.Context, owner uint64, lk *fuse.FileLock, flags uint32) syscall.Errno
+	Setlkw(ctx context.Context, owner uint64, lk *fuse.FileLock, flags uint32) syscall.Errno
+	Lseek(ctx context.Context, off uint64, whence uint32) (uint64, syscall.Errno)
+	Flush(ctx context.Context) syscall.Errno
+	Fsync(ctx context.Context, flags uint32) syscall.Errno
+	Setattr(ctx context.Context, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno
+	Allocate(ctx context.Context, off uint64, size uint64, mode uint32) syscall.Errno
+}
+
+type openBlob struct {
+	FileAllOps
+	flags uint32
+}
+
+// save takes the file and saves it back into Git storage updating
+// n.id and n.size
+func (n *gitBlobNode) saveToGit() error {
+	enc := n.root.repo.Storer.NewEncodedObject()
+	enc.SetType(plumbing.BlobObject)
+	w, err := enc.Writer()
+	if err != nil {
+		return err
+	}
+
+	f, err := os.Open(n.backingFile)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	sz, err := io.Copy(w, f)
+	if err != nil {
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+
+	id, err := n.root.repo.Storer.SetEncodedObject(enc)
+	if err != nil {
+		return err
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.id = id
+	n.size = uint64(sz)
+	log.Println("new hash is", id)
+	return nil
+}
+
+var _ = (fs.NodeFlusher)((*gitBlobNode)(nil))
+
+func (n *gitBlobNode) Flush(ctx context.Context, fh fs.FileHandle) syscall.Errno {
+	errno := fh.(fs.FileFlusher).Flush(ctx)
+	if errno != 0 {
+		return errno
+	}
+
+	of := fh.(*openBlob)
+	if of.flags&(syscall.O_WRONLY|syscall.O_APPEND|syscall.O_RDWR) != 0 {
+		if err := n.saveToGit(); err != nil {
+			log.Printf("mf.save: %v", err)
+			return syscall.EIO
+		}
+	}
+	return 0
+}
+
+var _ = (fs.NodeReleaser)((*gitBlobNode)(nil))
+
+func (n *gitBlobNode) Release(ctx context.Context, fh fs.FileHandle) syscall.Errno {
+	fh.(fs.FileReleaser).Release(ctx)
+	n.unmaterialize()
+	return 0
+}
+
+func (n *gitBlobNode) unmaterialize() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.openCount--
+	if n.openCount < 0 {
+		log.Fatal("underflow")
+	}
+	if n.openCount == 0 {
+		syscall.Close(n.backingFd)
+		syscall.Unlink(n.backingFile)
+		n.backingFd = 0
+		n.backingFile = ""
+	}
+}
+
+// materialize creates a private fd for this inode. We cannot use the
+// CAS file for this. If the file is opened read-only, the same file
+// can be opened R/W and changes should reflect in the R/O file too.
+func (n *gitBlobNode) materialize() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.backingFd > 0 {
+		n.openCount++
+		return nil
+	}
+	t, err := ioutil.TempFile("", "")
+	if err != nil {
+		return err
+	}
+	defer t.Close()
+
+	var zero plumbing.Hash
+	if n.id != zero {
+		f, ok := n.root.cas.Open(n.id)
+		if !ok {
+			if err := n.expandBlob(); err != nil {
+				log.Printf("load: %v", err)
+			} else {
+				f, ok = n.root.cas.Open(n.id)
+			}
+		}
+		if !ok {
+			return fmt.Errorf("can't materialize %s", n.id)
+		}
+		defer f.Close()
+
+		if _, err := io.Copy(t, f); err != nil {
+			return err
+		}
+		if err := t.Sync(); err != nil { //
+			return err
+		}
+
+		if _, err := t.Seek(0, 0); err != nil {
+			return err
+		}
+	}
+	fd, err := syscall.Dup(int(t.Fd()))
+	if err != nil {
+		return err
+	}
+
+	n.backingFile = t.Name()
+	n.backingFd = fd
+	n.openCount = 1
+	return nil
+}
+
+////////////////////////////////////////////////////////////////
+
+type gitTreeNode struct {
+	fs.Inode
+
+	root *gitFSRoot
+}
+
+// c&p from go-git
+type sortableEntries []object.TreeEntry
+
+func (sortableEntries) sortName(te object.TreeEntry) string {
+	if te.Mode == filemode.Dir {
+		return te.Name + "/"
+	}
+	return te.Name
+}
+func (se sortableEntries) Len() int               { return len(se) }
+func (se sortableEntries) Less(i int, j int) bool { return se.sortName(se[i]) < se.sortName(se[j]) }
+func (se sortableEntries) Swap(i int, j int)      { se[i], se[j] = se[j], se[i] }
+
+// ID computes the hash of the tree on the fly. We could cache this,
+// but invalidating looks hard.
+func (n *gitTreeNode) ID() (id plumbing.Hash, err error) {
+	var se sortableEntries
+	for k, v := range n.Children() {
+		e := object.TreeEntry{
+			Name: k,
+		}
+
+		switch ops := v.Operations().(type) {
+		case *gitBlobNode:
+			e.Mode = ops.mode
+			e.Hash = ops.id
+		case *gitTreeNode:
+			e.Mode = filemode.Dir
+			childID, childErr := ops.ID()
+			if childErr != nil {
+				return id, childErr
+			}
+			e.Hash = childID
+
+		default:
+			continue
+		}
+		se = append(se, e)
+	}
+	sort.Sort(se)
+	log.Println(se)
+	t := object.Tree{Entries: []object.TreeEntry(se)}
+
+	enc := n.root.repo.Storer.NewEncodedObject()
+	enc.SetType(plumbing.TreeObject)
+	if err := t.Encode(enc); err != nil {
+		return id, err
+	}
+
+	return n.root.repo.Storer.SetEncodedObject(enc)
+}
+
+var _ = (fs.NodeCreater)((*gitTreeNode)(nil))
+
+func (n *gitTreeNode) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (node *fs.Inode, fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
+	if mode&0111 != 0 {
+		mode = 0755
+	}
+
+	bn := &gitBlobNode{
+		root: n.root,
+		mode: filemode.FileMode(mode),
+	}
+
+	if err := bn.materialize(); err != nil {
+		errno = syscall.EIO
+		return
+	}
+
+	fd, err := syscall.Open(bn.backingFile, int(flags), 0777)
+	if err != nil {
+		errno = err.(syscall.Errno)
+		return
+	}
+
+	child := n.NewPersistentInode(ctx, bn, fs.StableAttr{})
+	n.AddChild(name, child, true)
+	fh = &openBlob{
+		FileAllOps: fs.NewLoopbackFile(fd).(FileAllOps),
+		flags:      flags,
+	}
+	return child, fh, 0, 0
+}
+
+////////////////////////////////////////////////////////////////
+
+type gitFSRoot struct {
+	gitTreeNode
+
+	repo     *git.Repository
+	cas      *CAS
+	id       plumbing.Hash
+	repoPath string
+
+	commitFile *commitFile
+}
+
+func NewRoot(cas *CAS, repo *git.Repository,
+	repoPath string,
+	id plumbing.Hash) (fs.InodeEmbedder, error) {
+	commit, err := repo.CommitObject(id)
+	if err != nil {
+		return nil, err
+	}
+	repoPath, err = filepath.Abs(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	log.Println("tree is ", commit.TreeHash)
+	root := &gitFSRoot{
+		repo:     repo,
+		cas:      cas,
+		id:       id,
+		repoPath: repoPath,
+	}
+	root.commitFile = &commitFile{
+		commit: commit,
+		root:   root,
+	}
+	root.commitFile.Attr.Mode = 0644
+	root.commitFile.resetData()
+	root.root = root
+	return root, nil
+}
+
+func (r *gitFSRoot) newGitBlobNode(ctx context.Context, mode filemode.FileMode, obj *object.Blob) (*fs.Inode, error) {
+	bn := &gitBlobNode{
+		root: r,
+		id:   obj.ID(),
+		mode: mode,
+		size: uint64(obj.Size),
+	}
+	if mode == filemode.Symlink {
+		rc, err := obj.Reader()
+		if err != nil {
+			return nil, err
+		}
+
+		defer rc.Close()
+		data, err := ioutil.ReadAll(rc)
+		if err != nil {
+			return nil, err
+		}
+		bn.linkTarget = data
+	}
+	return r.NewPersistentInode(ctx, bn, fs.StableAttr{Mode: uint32(mode)}), nil
+}
+func (r *gitFSRoot) newGitTreeNode(ctx context.Context, tree *object.Tree) (*fs.Inode, error) {
+	treeNode := &gitTreeNode{}
+	node := r.NewPersistentInode(ctx, treeNode, fs.StableAttr{Mode: fuse.S_IFDIR})
+	return node, r.addGitTree(ctx, node, tree)
+}
+
+// addGitTree adds entries under tree to node.
+func (r *gitFSRoot) addGitTree(ctx context.Context, node *fs.Inode, tree *object.Tree) error {
+	for _, e := range tree.Entries {
+		child, err := r.newGitNode(ctx, e.Mode, e.Hash)
+		if err != nil {
+			return err
+		}
+
+		node.AddChild(e.Name, child, true)
+	}
+
+	return nil
+}
+
+func (r *gitFSRoot) newGitNode(ctx context.Context, mode filemode.FileMode, id plumbing.Hash) (*fs.Inode, error) {
+	obj, err := r.repo.Object(plumbing.AnyObject, id)
+	if err != nil {
+		return nil, err
+	}
+
+	switch o := obj.(type) {
+	case *object.Tree:
+		return r.newGitTreeNode(ctx, o)
+	case *object.Blob:
+		return r.newGitBlobNode(ctx, mode, o)
+	default:
+		return nil, fmt.Errorf("unsupported")
+	}
+}
+
+var _ = (fs.NodeOnAdder)((*gitFSRoot)(nil))
+
+func (r *gitFSRoot) OnAdd(ctx context.Context) {
+	c := r.commitFile.commit
+	tree, err := r.repo.TreeObject(c.TreeHash)
+	if err != nil {
+		log.Fatalf("TreeObject %s: %v", c.TreeHash, err)
+	}
+	if err := r.addGitTree(ctx, &r.Inode, tree); err != nil {
+		log.Fatalf("addGitTree: %v", err)
+	}
+	r.AddChild(".commit", r.NewPersistentInode(ctx, r.commitFile, fs.StableAttr{}), true)
+
+	// this kind of works, but is confusing as HEAD isn't synced with our HEAD
+	if false {
+		r.AddChild(".git", r.NewPersistentInode(ctx, &fs.MemSymlink{Data: []byte(r.repoPath)}, fs.StableAttr{Mode: fuse.S_IFLNK}), true)
+	}
+}
+
+////////////////////////////////////////////////////////////////
+
+type commitFile struct {
+	fs.MemRegularFile
+	commit *object.Commit
+	root   *gitFSRoot
+
+	mounted bool
+}
+
+var _ = (fs.NodeOnAdder)((*commitFile)(nil))
+
+func (n *commitFile) OnAdd(ctx context.Context) {
+	n.mounted = true
+}
+
+func (n *commitFile) resetData() {
+	c := n.commit
+	n.Data = []byte(fmt.Sprintf("Commit: %s\nAuthor: %s\nCommitter: %s\n\n%s", c.ID(), c.Author, c.Committer, c.Message))
+
+	if n.mounted {
+		n.NotifyContent(0, int64(len(n.Data)))
+	}
+}
+
+var _ = (fs.NodeFlusher)((*gitBlobNode)(nil))
+
+func (n *commitFile) Flush(ctx context.Context, fh fs.FileHandle) syscall.Errno {
+	log.Println("recalc commit")
+
+	c2 := *n.commit
+	fields := strings.SplitN(string(n.Data), "\n\n", 2)
+	c2.Message = fields[1]
+
+	if err := n.recalcCommit(c2); err != nil {
+		log.Printf("recalc commit: %v", err)
+		n.resetData()
+	}
+	return 0
+}
+
+var _ = (fs.NodeOpener)((*commitFile)(nil))
+
+func (n *commitFile) Open(ctx context.Context, flags uint32) (fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
+	if err := n.recalcCommit(*n.commit); err != nil {
+		log.Printf("recalc commit: %v", err)
+	}
+
+	return n.MemRegularFile.Open(ctx, flags)
+}
+
+func (n *commitFile) Fsync(ctx context.Context, f fs.FileHandle, flags uint32) syscall.Errno {
+	return 0
+}
+
+func (n *commitFile) recalcCommit(c object.Commit) error {
+	treeID, err := n.root.ID()
+	if err != nil {
+		return err
+	}
+
+	log.Printf("new tree: %s", treeID)
+
+	c.TreeHash = treeID
+
+	enc := n.root.repo.Storer.NewEncodedObject()
+	enc.SetType(plumbing.CommitObject)
+	if err := c.Encode(enc); err != nil {
+		return err
+	}
+
+	id, err := n.root.repo.Storer.SetEncodedObject(enc)
+	if err != nil {
+		return err
+	}
+	log.Println("new commit", id)
+	c.Hash = id
+	*n.commit = c
+	n.resetData()
+	return nil
+}
