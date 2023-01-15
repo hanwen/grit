@@ -18,6 +18,7 @@ import (
 	"syscall"
 
 	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -41,6 +42,16 @@ type gitBlobNode struct {
 	backingFile string
 	backingFd   int
 	openCount   int
+}
+
+func (n *gitBlobNode) gitID() (plumbing.Hash, error) {
+	return n.id, nil
+}
+
+func (n *gitBlobNode) dirMode() filemode.FileMode {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.mode
 }
 
 var _ = (fs.NodeOpener)((*gitBlobNode)(nil))
@@ -273,6 +284,11 @@ func (n *gitBlobNode) materialize() error {
 
 ////////////////////////////////////////////////////////////////
 
+type gitNode interface {
+	gitID() (plumbing.Hash, error)
+	dirMode() filemode.FileMode
+}
+
 type gitTreeNode struct {
 	fs.Inode
 
@@ -292,34 +308,33 @@ func (se sortableEntries) Len() int               { return len(se) }
 func (se sortableEntries) Less(i int, j int) bool { return se.sortName(se[i]) < se.sortName(se[j]) }
 func (se sortableEntries) Swap(i int, j int)      { se[i], se[j] = se[j], se[i] }
 
+func (n *gitTreeNode) dirMode() filemode.FileMode {
+	return filemode.Dir
+}
+
 // ID computes the hash of the tree on the fly. We could cache this,
 // but invalidating looks hard.
-func (n *gitTreeNode) ID() (id plumbing.Hash, err error) {
+func (n *gitTreeNode) gitID() (id plumbing.Hash, err error) {
 	var se sortableEntries
 	for k, v := range n.Children() {
-		e := object.TreeEntry{
-			Name: k,
+		ops, ok := v.Operations().(gitNode)
+		if !ok {
+			continue
 		}
 
-		switch ops := v.Operations().(type) {
-		case *gitBlobNode:
-			e.Mode = ops.mode
-			e.Hash = ops.id
-		case *gitTreeNode:
-			e.Mode = filemode.Dir
-			childID, childErr := ops.ID()
-			if childErr != nil {
-				return id, childErr
-			}
-			e.Hash = childID
+		id, err := ops.gitID()
+		if err != nil {
+			return id, err
+		}
 
-		default:
-			continue
+		e := object.TreeEntry{
+			Name: k,
+			Mode: ops.dirMode(),
+			Hash: id,
 		}
 		se = append(se, e)
 	}
 	sort.Sort(se)
-	log.Println(se)
 	t := object.Tree{Entries: []object.TreeEntry(se)}
 
 	enc := n.root.repo.Storer.NewEncodedObject()
@@ -376,6 +391,40 @@ type gitFSRoot struct {
 	commitFile *commitFile
 }
 
+func (r *gitFSRoot) gitID() (plumbing.Hash, error) {
+	return r.commitFile.commit.Hash, nil
+}
+
+func (r *gitFSRoot) modules() (*config.Modules, error) {
+	ch := r.GetChild(".gitmodules")
+	if ch == nil {
+		return nil, nil
+	}
+
+	blob, ok := ch.Operations().(*gitBlobNode)
+	if !ok {
+		return nil, fmt.Errorf(".gitmodules is not a blob")
+	}
+
+	if err := blob.materialize(); err != nil {
+		return nil, err
+	}
+
+	defer blob.unmaterialize()
+
+	data, err := ioutil.ReadFile(blob.backingFile)
+	if err != nil {
+		return nil, err
+	}
+
+	mods := config.NewModules()
+	if err := mods.Unmarshal(data); err != nil {
+		return nil, err
+	}
+
+	return mods, nil
+}
+
 func NewRoot(cas *CAS, repo *git.Repository,
 	repoPath string,
 	id plumbing.Hash) (fs.InodeEmbedder, error) {
@@ -387,7 +436,6 @@ func NewRoot(cas *CAS, repo *git.Repository,
 	if err != nil {
 		return nil, err
 	}
-	log.Println("tree is ", commit.TreeHash)
 	root := &gitFSRoot{
 		repo:     repo,
 		cas:      cas,
@@ -401,6 +449,7 @@ func NewRoot(cas *CAS, repo *git.Repository,
 	root.commitFile.Attr.Mode = 0644
 	root.commitFile.resetData()
 	root.root = root
+
 	return root, nil
 }
 
@@ -426,18 +475,67 @@ func (r *gitFSRoot) newGitBlobNode(ctx context.Context, mode filemode.FileMode, 
 	}
 	return r.NewPersistentInode(ctx, bn, fs.StableAttr{Mode: uint32(mode)}), nil
 }
-func (r *gitFSRoot) newGitTreeNode(ctx context.Context, tree *object.Tree) (*fs.Inode, error) {
-	treeNode := &gitTreeNode{}
+
+func (r *gitFSRoot) newGitTreeNode(ctx context.Context, tree *object.Tree, nodePath string) (*fs.Inode, error) {
+	treeNode := &gitTreeNode{
+		root: r,
+	}
+
 	node := r.NewPersistentInode(ctx, treeNode, fs.StableAttr{Mode: fuse.S_IFDIR})
-	return node, r.addGitTree(ctx, node, tree)
+	return node, r.addGitTree(ctx, node, nodePath, tree)
+}
+
+func (r *gitFSRoot) newSubmoduleNode(ctx context.Context, mods *config.Modules, path string, id plumbing.Hash) (*fs.Inode, error) {
+	var submod *config.Submodule
+	for _, m := range mods.Submodules {
+		if m.Path == path {
+			submod = m
+			break
+		}
+	}
+	if submod == nil {
+		return nil, fmt.Errorf("submodule %q unknown", path)
+	}
+
+	repoPath := filepath.Join(r.repoPath, "modules", submod.Name)
+	subRepo, err := git.PlainOpen(repoPath)
+	if err != nil {
+		return nil, err
+	}
+
+	ops, err := NewRoot(r.cas, subRepo, repoPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	return r.NewPersistentInode(ctx, ops, fs.StableAttr{Mode: fuse.S_IFDIR}), nil
 }
 
 // addGitTree adds entries under tree to node.
-func (r *gitFSRoot) addGitTree(ctx context.Context, node *fs.Inode, tree *object.Tree) error {
+func (r *gitFSRoot) addGitTree(ctx context.Context, node *fs.Inode, nodePath string, tree *object.Tree) error {
+	var mods *config.Modules
 	for _, e := range tree.Entries {
-		child, err := r.newGitNode(ctx, e.Mode, e.Hash)
-		if err != nil {
-			return err
+		var child *fs.Inode
+		var err error
+		if e.Mode == filemode.Submodule {
+			if mods == nil {
+				mods, err = r.modules()
+				if err != nil {
+					log.Printf(".gitmodules error %s", err)
+					continue
+				}
+			}
+			path := filepath.Join(nodePath, e.Name)
+			child, err = r.newSubmoduleNode(ctx, mods, path, e.Hash)
+			if err != nil {
+				log.Printf("submodule %q: %v", path, err)
+				continue
+			}
+		} else {
+			child, err = r.newGitNode(ctx, e.Mode, e.Hash, filepath.Join(nodePath, e.Name))
+			if err != nil {
+				return err
+			}
 		}
 
 		node.AddChild(e.Name, child, true)
@@ -446,7 +544,7 @@ func (r *gitFSRoot) addGitTree(ctx context.Context, node *fs.Inode, tree *object
 	return nil
 }
 
-func (r *gitFSRoot) newGitNode(ctx context.Context, mode filemode.FileMode, id plumbing.Hash) (*fs.Inode, error) {
+func (r *gitFSRoot) newGitNode(ctx context.Context, mode filemode.FileMode, id plumbing.Hash, nodePath string) (*fs.Inode, error) {
 	obj, err := r.repo.Object(plumbing.AnyObject, id)
 	if err != nil {
 		return nil, err
@@ -454,7 +552,7 @@ func (r *gitFSRoot) newGitNode(ctx context.Context, mode filemode.FileMode, id p
 
 	switch o := obj.(type) {
 	case *object.Tree:
-		return r.newGitTreeNode(ctx, o)
+		return r.newGitTreeNode(ctx, o, nodePath)
 	case *object.Blob:
 		return r.newGitBlobNode(ctx, mode, o)
 	default:
@@ -470,7 +568,7 @@ func (r *gitFSRoot) OnAdd(ctx context.Context) {
 	if err != nil {
 		log.Fatalf("TreeObject %s: %v", c.TreeHash, err)
 	}
-	if err := r.addGitTree(ctx, &r.Inode, tree); err != nil {
+	if err := r.addGitTree(ctx, &r.Inode, "", tree); err != nil {
 		log.Fatalf("addGitTree: %v", err)
 	}
 	r.AddChild(".commit", r.NewPersistentInode(ctx, r.commitFile, fs.StableAttr{}), true)
@@ -515,7 +613,7 @@ func (n *commitFile) Flush(ctx context.Context, fh fs.FileHandle) syscall.Errno 
 	fields := strings.SplitN(string(n.Data), "\n\n", 2)
 	c2.Message = fields[1]
 
-	if err := n.recalcCommit(c2); err != nil {
+	if err := n.calcCommit(c2); err != nil {
 		log.Printf("recalc commit: %v", err)
 		n.resetData()
 	}
@@ -524,8 +622,12 @@ func (n *commitFile) Flush(ctx context.Context, fh fs.FileHandle) syscall.Errno 
 
 var _ = (fs.NodeOpener)((*commitFile)(nil))
 
+func (n *commitFile) recalcCommit() error {
+	return n.calcCommit(*n.commit)
+}
+
 func (n *commitFile) Open(ctx context.Context, flags uint32) (fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
-	if err := n.recalcCommit(*n.commit); err != nil {
+	if err := n.recalcCommit(); err != nil {
 		log.Printf("recalc commit: %v", err)
 	}
 
@@ -536,8 +638,8 @@ func (n *commitFile) Fsync(ctx context.Context, f fs.FileHandle, flags uint32) s
 	return 0
 }
 
-func (n *commitFile) recalcCommit(c object.Commit) error {
-	treeID, err := n.root.ID()
+func (n *commitFile) calcCommit(c object.Commit) error {
+	treeID, err := n.root.gitTreeNode.gitID()
 	if err != nil {
 		return err
 	}
