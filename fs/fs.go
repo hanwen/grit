@@ -79,6 +79,7 @@ func (n *gitBlobNode) setSize(sz uint64) error {
 	if err := n.materialize(); err != nil {
 		return err
 	}
+	defer n.unmaterialize()
 
 	if err := os.Truncate(n.backingFile, int64(sz)); err != nil {
 		return err
@@ -88,7 +89,6 @@ func (n *gitBlobNode) setSize(sz uint64) error {
 		return err
 	}
 
-	n.unmaterialize()
 	return nil
 }
 
