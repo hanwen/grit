@@ -26,14 +26,16 @@ func (s *CommandServer) Exec(req *CommandRequest, rep *CommandReply) error {
 	if err != nil {
 		return err
 	}
-	exit, err := RunCommand(req.Args, req.Env, ioc, s.root)
+	exit, err := RunCommand(req.Args, req.Dir, ioc, s.root)
 	rep.ExitCode = exit
 	return err
 }
 
 type CommandRequest struct {
-	Args      []string
-	Env       []string
+	Args []string
+
+	// relative to top of FS
+	Dir       string
 	RPCSocket string
 }
 
@@ -121,23 +123,26 @@ func (s *IOServer) Write(req *WriteRequest, rep *WriteReply) error {
 	return err
 }
 
-func FindGlitSocket(dir string) (string, error) {
-	for dir != "/" {
+func FindGlitSocket(startDir string) (socket string, topdir string, err error) {
+	for dir := startDir; dir != "/"; dir = filepath.Dir(dir) {
 		p := filepath.Join(dir, ".glit")
 		fi, err := os.Stat(p)
-		if err != nil {
-			dir = filepath.Dir(dir)
+		if fi == nil || fi.Mode()&iofs.ModeType != iofs.ModeSocket {
 			continue
 		}
-		if fi.Mode()&iofs.ModeType == iofs.ModeSocket {
-			return filepath.EvalSymlinks(p)
+		val, err := os.Readlink(p)
+		if err != nil {
+			return "", "", err
+		}
+		if filepath.IsAbs(val) {
+			return val, dir, nil
 		}
 	}
 
-	return "", fmt.Errorf("glit socket not found")
+	return "", "", fmt.Errorf("glit socket not found")
 }
 
-func ClientRun(socket string, args []string, env []string) (int, error) {
+func ClientRun(socket string, args []string, dir string) (int, error) {
 	srv, err := NewIOServer()
 	if err != nil {
 		return 0, err
@@ -150,7 +155,7 @@ func ClientRun(socket string, args []string, env []string) (int, error) {
 
 	req := CommandRequest{
 		Args:      args,
-		Env:       env,
+		Dir:       dir,
 		RPCSocket: srv.Socket,
 	}
 	rep := CommandReply{}

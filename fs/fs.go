@@ -45,6 +45,10 @@ type gitBlobNode struct {
 	openCount   int
 }
 
+func (n *gitBlobNode) gitRepo() *git.Repository {
+	return n.root.repo
+}
+
 func (n *gitBlobNode) gitID() (plumbing.Hash, error) {
 	return n.id, nil
 }
@@ -288,12 +292,17 @@ func (n *gitBlobNode) materialize() error {
 type gitNode interface {
 	gitID() (plumbing.Hash, error)
 	dirMode() filemode.FileMode
+	gitRepo() *git.Repository
 }
 
 type gitTreeNode struct {
 	fs.Inode
 
 	root *gitFSRoot
+}
+
+func (n *gitTreeNode) gitRepo() *git.Repository {
+	return n.root.repo
 }
 
 // c&p from go-git
@@ -555,6 +564,7 @@ func (r *gitFSRoot) newSubmoduleNode(ctx context.Context, mods *config.Modules, 
 func (r *gitFSRoot) addGitTree(ctx context.Context, node *fs.Inode, nodePath string, tree *object.Tree) error {
 	var mods *config.Modules
 	for _, e := range tree.Entries {
+		path := filepath.Join(nodePath, e.Name)
 		var child *fs.Inode
 		var err error
 		if e.Mode == filemode.Submodule {
@@ -565,7 +575,6 @@ func (r *gitFSRoot) addGitTree(ctx context.Context, node *fs.Inode, nodePath str
 					continue
 				}
 			}
-			path := filepath.Join(nodePath, e.Name)
 			child, err = r.newSubmoduleNode(ctx, mods, path, e.Hash)
 			if err != nil {
 				log.Printf("submodule %q: %v", path, err)
@@ -579,6 +588,13 @@ func (r *gitFSRoot) addGitTree(ctx context.Context, node *fs.Inode, nodePath str
 		}
 
 		node.AddChild(e.Name, child, true)
+
+		if e.Mode == filemode.Submodule {
+			child.AddChild(".glit",
+				r.NewPersistentInode(ctx,
+					&fs.MemSymlink{Data: []byte(strings.Repeat("../", strings.Count(path, "/")+1) + ".glit")},
+					fs.StableAttr{Mode: fuse.S_IFLNK}), true)
+		}
 	}
 
 	return nil

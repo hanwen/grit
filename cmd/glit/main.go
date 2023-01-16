@@ -8,6 +8,7 @@ import (
 	"flag"
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/hanwen/gitfs/fs"
 )
@@ -24,13 +25,21 @@ func main() {
 		}
 	}
 
-	sock, err := fs.FindGlitSocket(*dir)
+	*dir = filepath.Clean(*dir)
+	sock, topdir, err := fs.FindGlitSocket(*dir)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// TODO - pass os.Environ.
-	code, err := fs.ClientRun(sock, flag.Args(), nil)
+	relCWD, err := filepath.Rel(topdir, *dir)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if relCWD == "." {
+		relCWD = ""
+	}
+	code, err := fs.ClientRun(sock, flag.Args(), relCWD)
 	if err != nil {
 		log.Fatal(err)
 	}

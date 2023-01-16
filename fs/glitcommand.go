@@ -14,6 +14,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/hanwen/go-fuse/v2/fs"
 )
 
 func Usage(ioc *IOClient) (int, error) {
@@ -38,7 +39,34 @@ func usage(fs *flag.FlagSet) func() {
 	}
 }
 
-func LogCommand(args []string, env []string, ioc *IOClient, root *glitRoot) (int, error) {
+func findRoot(dir string, root *glitRoot) (*fs.Inode, string, error) {
+	rootInode := root.EmbeddedInode()
+	rootIdx := 0
+
+	if dir == "" {
+		return rootInode, "", nil
+	}
+
+	components := strings.Split(dir, "/")
+	current := rootInode
+	for i, c := range components {
+		ch := current.GetChild(c)
+		if ch == nil {
+			return nil, "", fmt.Errorf("cannot find child %q at %v", c, rootInode.Path(root.EmbeddedInode()))
+		}
+
+		if _, ok := ch.Operations().(*gitFSRoot); ok {
+			rootInode = ch
+			rootIdx = i
+		}
+
+		current = ch
+	}
+
+	return rootInode, strings.Join(components[rootIdx:], "/"), nil
+}
+
+func LogCommand(args []string, dir string, ioc *IOClient, root *glitRoot) (int, error) {
 	fs := flag.NewFlagSet("log", flag.ContinueOnError)
 	patch := fs.Bool("p", false, "show patches")
 	fs.Bool("help", false, "show help")
@@ -50,14 +78,20 @@ func LogCommand(args []string, env []string, ioc *IOClient, root *glitRoot) (int
 		return 2, nil // Parse already prints diagnostics.
 	}
 
+	rootInode, _, err := findRoot(dir, root)
+	if err != nil {
+		ioc.Println("%s", err)
+		return 2, nil
+	}
+	rootGitNode := rootInode.Operations().(gitNode)
+
 	args = fs.Args()
 	var startHash plumbing.Hash
-	var err error
 	if len(args) > 0 && plumbing.IsHash(args[0]) {
 		startHash = plumbing.NewHash(args[0])
 		args = args[1:]
 	} else {
-		startHash, err = root.gitID()
+		startHash, err = rootGitNode.gitID()
 		if err != nil {
 			ioc.Println("root.gitID: %v", err)
 			return 2, nil
@@ -76,7 +110,7 @@ func LogCommand(args []string, env []string, ioc *IOClient, root *glitRoot) (int
 		opts.PathFilter = newPathFilter(filtered)
 	}
 
-	iter, err := root.repo.Log(opts)
+	iter, err := rootGitNode.gitRepo().Log(opts)
 	if err != nil {
 		ioc.Println("Log: %v\n", err)
 		return 1, nil
@@ -125,11 +159,11 @@ func LogCommand(args []string, env []string, ioc *IOClient, root *glitRoot) (int
 	return 0, nil
 }
 
-var dispatch = map[string]func([]string, []string, *IOClient, *glitRoot) (int, error){
+var dispatch = map[string]func([]string, string, *IOClient, *glitRoot) (int, error){
 	"log": LogCommand,
 }
 
-func RunCommand(args []string, env []string, ioc *IOClient, root *glitRoot) (int, error) {
+func RunCommand(args []string, dir string, ioc *IOClient, root *glitRoot) (int, error) {
 	if len(args) == 0 {
 		return Usage(ioc)
 	}
@@ -144,5 +178,5 @@ func RunCommand(args []string, env []string, ioc *IOClient, root *glitRoot) (int
 		return 2, nil
 	}
 
-	return fn(args, env, ioc, root)
+	return fn(args, dir, ioc, root)
 }
