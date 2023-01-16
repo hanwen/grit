@@ -104,7 +104,7 @@ func LogCommand(args []string, dir string, ioc *IOClient, root gitNode) (int, er
 		opts.PathFilter = newPathFilter(filtered)
 	}
 
-	iter, err := root.gitRepo().Log(opts)
+	iter, err := root.fsRoot().repo.Log(opts)
 	if err != nil {
 		ioc.Println("Log: %v\n", err)
 		return 1, nil
@@ -153,8 +153,46 @@ func LogCommand(args []string, dir string, ioc *IOClient, root gitNode) (int, er
 	return 0, nil
 }
 
+func amend(ioc *IOClient, root gitNode) error {
+	// Update commit
+	root.fsRoot().gitID()
+
+	c := *root.fsRoot().commit
+
+	msg := `# provide a new commit message below.
+# remove the Glit-Commit footer for further edits to
+# create a new commit
+
+` + c.Message
+	data, err := ioc.Edit([]byte(msg))
+	if err != nil {
+		return err
+	}
+
+	var lines []string
+	for _, l := range strings.Split(string(data), "\n") {
+		if len(l) > 0 && l[0] == '#' {
+			continue
+		}
+		lines = append(lines, l)
+	}
+
+	c.Message = strings.Join(lines, "\n")
+
+	return root.fsRoot().storeCommit(&c)
+}
+
+func AmendCommand(args []string, dir string, ioc *IOClient, root gitNode) (int, error) {
+	if err := amend(ioc, root); err != nil {
+		ioc.Println("%v", err)
+		return 2, nil
+	}
+	return 0, nil
+}
+
 var dispatch = map[string]func([]string, string, *IOClient, gitNode) (int, error){
-	"log": LogCommand,
+	"log":   LogCommand,
+	"amend": AmendCommand,
 }
 
 func RunCommand(args []string, dir string, ioc *IOClient, root *glitRoot) (int, error) {

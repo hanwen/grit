@@ -47,8 +47,8 @@ type gitBlobNode struct {
 	openCount   int
 }
 
-func (n *gitBlobNode) gitRepo() *git.Repository {
-	return n.root.repo
+func (n *gitBlobNode) fsRoot() *gitFSRoot {
+	return n.root
 }
 
 func (n *gitBlobNode) gitID() (plumbing.Hash, error) {
@@ -294,7 +294,7 @@ func (n *gitBlobNode) materialize() error {
 type gitNode interface {
 	gitID() (plumbing.Hash, error)
 	dirMode() filemode.FileMode
-	gitRepo() *git.Repository
+	fsRoot() *gitFSRoot
 }
 
 type gitTreeNode struct {
@@ -303,8 +303,8 @@ type gitTreeNode struct {
 	root *gitFSRoot
 }
 
-func (n *gitTreeNode) gitRepo() *git.Repository {
-	return n.root.repo
+func (n *gitTreeNode) fsRoot() *gitFSRoot {
+	return n.root
 }
 
 // c&p from go-git
@@ -421,18 +421,33 @@ func init() {
 	mySig.Email = fmt.Sprintf("%s@localhost", u.Username)
 }
 
+func (r *gitFSRoot) storeCommit(c *object.Commit) error {
+	enc := r.repo.Storer.NewEncodedObject()
+	enc.SetType(plumbing.CommitObject)
+	if err := c.Encode(enc); err != nil {
+		return err
+	}
+
+	id, err := r.repo.Storer.SetEncodedObject(enc)
+	if err != nil {
+		return err
+	}
+
+	c.Hash = id
+
+	log.Println("new commit", c.Hash)
+	r.commit = c
+	return nil
+}
+
 func (r *gitFSRoot) gitID() (plumbing.Hash, error) {
 	lastTree := r.commit.TreeHash
-	log.Println("tree ID")
 	treeID, err := r.gitTreeNode.gitID()
 	if err != nil {
 		return plumbing.ZeroHash, err
 	}
 
 	if lastTree != treeID {
-		enc := r.repo.Storer.NewEncodedObject()
-		enc.SetType(plumbing.CommitObject)
-
 		c := *r.commit
 		if isGlitCommit(r.commit) {
 			// amend commit
@@ -451,17 +466,7 @@ Glit-Commit: yes
 				ParentHashes: []plumbing.Hash{r.commit.Hash},
 			}
 		}
-		if err := c.Encode(enc); err != nil {
-			return plumbing.ZeroHash, err
-		}
-
-		id, err := r.repo.Storer.SetEncodedObject(enc)
-		if err != nil {
-			return plumbing.ZeroHash, err
-		}
-		log.Println("new commit", id)
-		c.Hash = id
-		r.commit = &c
+		r.storeCommit(&c)
 	}
 
 	return r.commit.Hash, nil
