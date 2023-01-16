@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net/rpc"
 	"os"
 	"path/filepath"
 	"sort"
@@ -451,6 +452,45 @@ func NewRoot(cas *CAS, repo *git.Repository,
 	root.root = root
 
 	return root, nil
+}
+
+type glitRoot struct {
+	*gitFSRoot
+	rpcServer CommandServer
+}
+
+func (r *glitRoot) OnAdd(ctx context.Context) {
+	r.gitFSRoot.OnAdd(ctx)
+	ch := r.NewPersistentInode(ctx, &fs.MemSymlink{
+		Data: []byte(r.rpcServer.Socket),
+	}, fs.StableAttr{Mode: fuse.S_IFLNK})
+	r.AddChild(".glit", ch, true)
+}
+
+func NewGlitRoot(cas *CAS, repo *git.Repository,
+	repoPath string,
+	id plumbing.Hash) (fs.InodeEmbedder, error) {
+	r, err := NewRoot(cas, repo, repoPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	rg := &glitRoot{
+		gitFSRoot: r.(*gitFSRoot),
+	}
+	rg.rpcServer.root = rg
+	l, s, err := newSocket()
+	if err != nil {
+		return nil, err
+	}
+	rg.rpcServer.Socket = s
+	srv := rpc.NewServer()
+	if err := srv.Register(&rg.rpcServer); err != nil {
+		return nil, err
+	}
+	go srv.Accept(l)
+
+	return rg, nil
 }
 
 func (r *gitFSRoot) newGitBlobNode(ctx context.Context, mode filemode.FileMode, obj *object.Blob) (*fs.Inode, error) {
