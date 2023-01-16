@@ -57,6 +57,10 @@ func (ioc *IOClient) Printf(str string, args ...any) (int, error) {
 	return fmt.Fprintf(ioc, str, args...)
 }
 
+func (ioc *IOClient) Println(str string, args ...any) (int, error) {
+	return fmt.Fprintf(ioc, str+"\n", args...)
+}
+
 func NewIOClient(sock string) (*IOClient, error) {
 	client, err := rpc.Dial("unix", sock)
 	if err != nil {
