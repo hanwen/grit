@@ -12,11 +12,13 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
@@ -398,11 +400,71 @@ type gitFSRoot struct {
 	id       plumbing.Hash
 	repoPath string
 
-	commitFile *commitFile
+	commit *object.Commit
+}
+
+func isGlitCommit(c *object.Commit) bool {
+	idx := strings.LastIndex(c.Message, "\n\n")
+	if idx == -1 {
+		return false
+	}
+
+	return strings.Contains(c.Message[idx:], "\nGlit-Commit: yes")
+}
+
+var mySig object.Signature
+
+func init() {
+	u, _ := user.Current()
+
+	mySig.Name = u.Name
+	mySig.Email = fmt.Sprintf("%s@localhost", u.Username)
 }
 
 func (r *gitFSRoot) gitID() (plumbing.Hash, error) {
-	return r.commitFile.commit.Hash, nil
+	lastTree := r.commit.TreeHash
+	log.Println("tree ID")
+	treeID, err := r.gitTreeNode.gitID()
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+
+	if lastTree != treeID {
+		enc := r.repo.Storer.NewEncodedObject()
+		enc.SetType(plumbing.CommitObject)
+
+		c := *r.commit
+		if isGlitCommit(r.commit) {
+			// amend commit
+			c.TreeHash = treeID
+		} else {
+			mySig.When = time.Now()
+			c = object.Commit{
+				Message: fmt.Sprintf(
+					`Snapshot originally created %v for tree %v
+
+Glit-Commit: yes
+`, time.Now(), treeID),
+				Author:       mySig,
+				Committer:    mySig,
+				TreeHash:     treeID,
+				ParentHashes: []plumbing.Hash{r.commit.Hash},
+			}
+		}
+		if err := c.Encode(enc); err != nil {
+			return plumbing.ZeroHash, err
+		}
+
+		id, err := r.repo.Storer.SetEncodedObject(enc)
+		if err != nil {
+			return plumbing.ZeroHash, err
+		}
+		log.Println("new commit", id)
+		c.Hash = id
+		r.commit = &c
+	}
+
+	return r.commit.Hash, nil
 }
 
 func (r *gitFSRoot) modules() (*config.Modules, error) {
@@ -451,13 +513,8 @@ func NewRoot(cas *CAS, repo *git.Repository,
 		cas:      cas,
 		id:       id,
 		repoPath: repoPath,
+		commit:   commit,
 	}
-	root.commitFile = &commitFile{
-		commit: commit,
-		root:   root,
-	}
-	root.commitFile.Attr.Mode = 0644
-	root.commitFile.resetData()
 	root.root = root
 
 	return root, nil
@@ -619,7 +676,7 @@ func (r *gitFSRoot) newGitNode(ctx context.Context, mode filemode.FileMode, id p
 var _ = (fs.NodeOnAdder)((*gitFSRoot)(nil))
 
 func (r *gitFSRoot) OnAdd(ctx context.Context) {
-	c := r.commitFile.commit
+	c := r.commit
 	tree, err := r.repo.TreeObject(c.TreeHash)
 	if err != nil {
 		log.Fatalf("TreeObject %s: %v", c.TreeHash, err)
@@ -627,96 +684,4 @@ func (r *gitFSRoot) OnAdd(ctx context.Context) {
 	if err := r.addGitTree(ctx, &r.Inode, "", tree); err != nil {
 		log.Fatalf("addGitTree: %v", err)
 	}
-	r.AddChild(".commit", r.NewPersistentInode(ctx, r.commitFile, fs.StableAttr{}), true)
-
-	// this kind of works, but is confusing as HEAD isn't synced with our HEAD
-	if false {
-		r.AddChild(".git", r.NewPersistentInode(ctx, &fs.MemSymlink{Data: []byte(r.repoPath)}, fs.StableAttr{Mode: fuse.S_IFLNK}), true)
-	}
-}
-
-////////////////////////////////////////////////////////////////
-
-type commitFile struct {
-	fs.MemRegularFile
-	commit *object.Commit
-	root   *gitFSRoot
-
-	mounted bool
-}
-
-var _ = (fs.NodeOnAdder)((*commitFile)(nil))
-
-func (n *commitFile) OnAdd(ctx context.Context) {
-	n.mounted = true
-}
-
-func (n *commitFile) resetData() {
-	c := n.commit
-	n.Data = []byte(fmt.Sprintf("Commit: %s\nAuthor: %s\nCommitter: %s\n\n%s", c.ID(), c.Author, c.Committer, c.Message))
-
-	if n.mounted {
-		n.NotifyContent(0, int64(len(n.Data)))
-	}
-}
-
-var _ = (fs.NodeFlusher)((*gitBlobNode)(nil))
-
-func (n *commitFile) Flush(ctx context.Context, fh fs.FileHandle) syscall.Errno {
-	log.Println("recalc commit")
-
-	c2 := *n.commit
-	fields := strings.SplitN(string(n.Data), "\n\n", 2)
-	c2.Message = fields[1]
-
-	if err := n.calcCommit(c2); err != nil {
-		log.Printf("recalc commit: %v", err)
-		n.resetData()
-	}
-	return 0
-}
-
-var _ = (fs.NodeOpener)((*commitFile)(nil))
-
-func (n *commitFile) recalcCommit() error {
-	return n.calcCommit(*n.commit)
-}
-
-func (n *commitFile) Open(ctx context.Context, flags uint32) (fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
-	if err := n.recalcCommit(); err != nil {
-		log.Printf("recalc commit: %v", err)
-	}
-
-	return n.MemRegularFile.Open(ctx, flags)
-}
-
-func (n *commitFile) Fsync(ctx context.Context, f fs.FileHandle, flags uint32) syscall.Errno {
-	return 0
-}
-
-func (n *commitFile) calcCommit(c object.Commit) error {
-	treeID, err := n.root.gitTreeNode.gitID()
-	if err != nil {
-		return err
-	}
-
-	log.Printf("new tree: %s", treeID)
-
-	c.TreeHash = treeID
-
-	enc := n.root.repo.Storer.NewEncodedObject()
-	enc.SetType(plumbing.CommitObject)
-	if err := c.Encode(enc); err != nil {
-		return err
-	}
-
-	id, err := n.root.repo.Storer.SetEncodedObject(enc)
-	if err != nil {
-		return err
-	}
-	log.Println("new commit", id)
-	c.Hash = id
-	*n.commit = c
-	n.resetData()
-	return nil
 }
