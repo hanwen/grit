@@ -40,7 +40,7 @@ func main() {
 	if err != nil {
 		log.Fatal("NewCAS", err)
 	}
-	root, err := fs.NewRoot(cas, repo, *repoPath, h)
+	root, err := fs.NewGlitRoot(cas, repo, *repoPath, h)
 	if err != nil {
 		log.Fatal("NewRoot", err)
 	}
