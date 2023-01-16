@@ -66,7 +66,7 @@ func findRoot(dir string, root *glitRoot) (*fs.Inode, string, error) {
 	return rootInode, strings.Join(components[rootIdx:], "/"), nil
 }
 
-func LogCommand(args []string, dir string, ioc *IOClient, root *glitRoot) (int, error) {
+func LogCommand(args []string, dir string, ioc *IOClient, root gitNode) (int, error) {
 	fs := flag.NewFlagSet("log", flag.ContinueOnError)
 	patch := fs.Bool("p", false, "show patches")
 	fs.Bool("help", false, "show help")
@@ -78,20 +78,14 @@ func LogCommand(args []string, dir string, ioc *IOClient, root *glitRoot) (int, 
 		return 2, nil // Parse already prints diagnostics.
 	}
 
-	rootInode, _, err := findRoot(dir, root)
-	if err != nil {
-		ioc.Println("%s", err)
-		return 2, nil
-	}
-	rootGitNode := rootInode.Operations().(gitNode)
-
 	args = fs.Args()
 	var startHash plumbing.Hash
+	var err error
 	if len(args) > 0 && plumbing.IsHash(args[0]) {
 		startHash = plumbing.NewHash(args[0])
 		args = args[1:]
 	} else {
-		startHash, err = rootGitNode.gitID()
+		startHash, err = root.gitID()
 		if err != nil {
 			ioc.Println("root.gitID: %v", err)
 			return 2, nil
@@ -110,7 +104,7 @@ func LogCommand(args []string, dir string, ioc *IOClient, root *glitRoot) (int, 
 		opts.PathFilter = newPathFilter(filtered)
 	}
 
-	iter, err := rootGitNode.gitRepo().Log(opts)
+	iter, err := root.gitRepo().Log(opts)
 	if err != nil {
 		ioc.Println("Log: %v\n", err)
 		return 1, nil
@@ -159,7 +153,7 @@ func LogCommand(args []string, dir string, ioc *IOClient, root *glitRoot) (int, 
 	return 0, nil
 }
 
-var dispatch = map[string]func([]string, string, *IOClient, *glitRoot) (int, error){
+var dispatch = map[string]func([]string, string, *IOClient, gitNode) (int, error){
 	"log": LogCommand,
 }
 
@@ -178,5 +172,12 @@ func RunCommand(args []string, dir string, ioc *IOClient, root *glitRoot) (int, 
 		return 2, nil
 	}
 
-	return fn(args, dir, ioc, root)
+	rootInode, dir, err := findRoot(dir, root)
+	if err != nil {
+		ioc.Println("%s", err)
+		return 2, nil
+	}
+	rootGitNode := rootInode.Operations().(gitNode)
+
+	return fn(args, dir, ioc, rootGitNode)
 }
