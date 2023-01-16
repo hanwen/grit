@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/rpc"
 	"os"
+	"os/exec"
 	"path/filepath"
 )
 
@@ -51,6 +52,14 @@ type WriteReply struct {
 	N int
 }
 
+type EditRequest struct {
+	Data []byte
+}
+
+type EditReply struct {
+	Data []byte
+}
+
 type IOClient struct {
 	client *rpc.Client
 }
@@ -73,6 +82,14 @@ func NewIOClient(sock string) (*IOClient, error) {
 		client: client,
 	}
 	return ioClient, nil
+}
+
+func (ioc *IOClient) Edit(data []byte) ([]byte, error) {
+	req := EditRequest{data}
+	rep := EditReply{}
+
+	err := ioc.client.Call("IOServer.Edit", &req, &rep)
+	return rep.Data, err
 }
 
 func (ioc *IOClient) Write(data []byte) (n int, err error) {
@@ -120,6 +137,25 @@ func NewIOServer() (*IOServer, error) {
 func (s *IOServer) Write(req *WriteRequest, rep *WriteReply) error {
 	n, err := os.Stdout.Write(req.Data)
 	rep.N = n
+	return err
+}
+
+func (s *IOServer) Edit(req *EditRequest, rep *EditReply) error {
+	f, err := ioutil.TempFile("", "")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+
+	if err := ioutil.WriteFile(f.Name(), req.Data, 0644); err != nil {
+		return err
+	}
+
+	cmd := exec.Command("/bin/sh", "-c", os.Getenv("EDITOR")+" "+f.Name())
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	rep.Data, err = ioutil.ReadFile(f.Name())
 	return err
 }
 
