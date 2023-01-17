@@ -429,7 +429,35 @@ func isGlitCommit(c *object.Commit) bool {
 		return false
 	}
 
-	return strings.Contains(c.Message[idx:], "\nGlit-Commit: yes")
+	return strings.Contains(c.Message[idx:], "\nGlit-Amends: ")
+}
+
+func setGlitCommit(msg string, h plumbing.Hash) string {
+	footerIdx := strings.LastIndex(msg, "\n\n")
+	var lines []string
+	body := msg
+	if footerIdx > 0 {
+		lines = strings.Split(msg[footerIdx+2:], "\n")
+		body = msg[:footerIdx]
+	}
+	newLine := "Glit-Amends: " + h.String()
+	seen := false
+
+	var newLines []string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "Glit-Amends: ") {
+			line = newLine
+			seen = true
+		}
+		if line == "" {
+			continue
+		}
+		newLines = append(newLines, line)
+	}
+	if !seen {
+		newLines = append(newLines, newLine)
+	}
+	return body + "\n\n" + strings.Join(newLines, "\n") + "\n"
 }
 
 func (r *gitFSRoot) dirMode() filemode.FileMode {
@@ -476,14 +504,13 @@ func (r *gitFSRoot) gitID() (plumbing.Hash, error) {
 		if isGlitCommit(r.commit) {
 			// amend commit
 			c.TreeHash = treeID
+			c.Message = setGlitCommit(r.commit.Message, r.commit.Hash)
 		} else {
 			mySig.When = time.Now()
+			ts := time.Now().Format(time.RFC822Z)
 			c = object.Commit{
-				Message: fmt.Sprintf(
-					`Snapshot originally created %v for tree %v
-
-Glit-Commit: yes
-`, time.Now(), treeID),
+				Message: setGlitCommit(fmt.Sprintf(
+					`Snapshot originally created %v for tree %v`, ts, treeID), r.commit.Hash),
 				Author:       mySig,
 				Committer:    mySig,
 				TreeHash:     treeID,
