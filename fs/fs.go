@@ -507,7 +507,7 @@ func NewRoot(cas *CAS, repo *git.Repository,
 	id plumbing.Hash) (fs.InodeEmbedder, error) {
 	commit, err := repo.CommitObject(id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("CommitObject(%v): %v", id, err)
 	}
 	repoPath, err = filepath.Abs(repoPath)
 	if err != nil {
