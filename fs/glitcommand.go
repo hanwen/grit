@@ -215,11 +215,12 @@ func lsTree(root *fs.Inode, dir string, recursive bool, ioc *IOClient) error {
 		return err
 	}
 	for _, e := range entries {
+		fn := filepath.Join(dir, e.Name)
 		if recursive && e.Mode == filemode.Dir {
-			lsTree(root.GetChild(e.Name), filepath.Join(dir, e.Name), recursive, ioc)
+			lsTree(root.GetChild(e.Name), fn, recursive, ioc)
 		} else {
 			// bug - mode _> string prefixes 0.
-			ioc.Println("%s %s %s\t%s", e.Mode.String()[1:], fileModeNames[e.Mode], e.Hash, e.Name)
+			ioc.Println("%s %s %s\t%s", e.Mode.String()[1:], fileModeNames[e.Mode], e.Hash, fn)
 		}
 	}
 
