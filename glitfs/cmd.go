@@ -17,7 +17,7 @@ import (
 )
 
 type CommandServer struct {
-	root   *glitRoot
+	root   *Root
 	Socket string
 }
 

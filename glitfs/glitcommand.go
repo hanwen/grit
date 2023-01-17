@@ -40,7 +40,7 @@ func usage(fs *flag.FlagSet) func() {
 	}
 }
 
-func findRoot(dir string, root *glitRoot) (*fs.Inode, string, error) {
+func findRoot(dir string, root *Root) (*fs.Inode, string, error) {
 	rootInode := root.EmbeddedInode()
 	rootIdx := 0
 
@@ -56,7 +56,7 @@ func findRoot(dir string, root *glitRoot) (*fs.Inode, string, error) {
 			return nil, "", fmt.Errorf("cannot find child %q at %v", c, current.Path(root.EmbeddedInode()))
 		}
 
-		if _, ok := ch.Operations().(*gitFSRoot); ok {
+		if _, ok := ch.Operations().(*RepoNode); ok {
 			rootInode = ch
 			rootIdx = i
 		}
@@ -67,7 +67,7 @@ func findRoot(dir string, root *glitRoot) (*fs.Inode, string, error) {
 	return rootInode, strings.Join(components[rootIdx:], "/"), nil
 }
 
-func LogCommand(args []string, dir string, ioc *IOClient, root gitNode) (int, error) {
+func LogCommand(args []string, dir string, ioc *IOClient, root Node) (int, error) {
 	fs := flag.NewFlagSet("log", flag.ContinueOnError)
 	patch := fs.Bool("p", false, "show patches")
 	fs.Bool("help", false, "show help")
@@ -154,7 +154,7 @@ func LogCommand(args []string, dir string, ioc *IOClient, root gitNode) (int, er
 	return 0, nil
 }
 
-func amend(ioc *IOClient, root gitNode) error {
+func amend(ioc *IOClient, root Node) error {
 	// Update commit
 	root.fsRoot().gitID()
 
@@ -183,7 +183,7 @@ func amend(ioc *IOClient, root gitNode) error {
 	return root.fsRoot().storeCommit(&c)
 }
 
-func AmendCommand(args []string, dir string, ioc *IOClient, root gitNode) (int, error) {
+func AmendCommand(args []string, dir string, ioc *IOClient, root Node) (int, error) {
 	if err := amend(ioc, root); err != nil {
 		ioc.Println("%v", err)
 		return 2, nil
@@ -200,12 +200,12 @@ var fileModeNames = map[filemode.FileMode]string{
 }
 
 func lsTree(root *fs.Inode, dir string, recursive bool, ioc *IOClient) error {
-	gitNode, ok := root.Operations().(gitNode)
+	Node, ok := root.Operations().(Node)
 	if !ok {
-		return fmt.Errorf("path %q is not a gitNode", root.Path(nil))
+		return fmt.Errorf("path %q is not a Node", root.Path(nil))
 	}
 
-	tree := gitNode.treeNode()
+	tree := Node.treeNode()
 	if tree == nil {
 		return fmt.Errorf("path %q is not a git tree", root.Path(nil))
 	}
@@ -227,7 +227,7 @@ func lsTree(root *fs.Inode, dir string, recursive bool, ioc *IOClient) error {
 	return nil
 }
 
-func LsTreeCommand(args []string, dir string, ioc *IOClient, root gitNode) (int, error) {
+func LsTreeCommand(args []string, dir string, ioc *IOClient, root Node) (int, error) {
 	flagSet := flag.NewFlagSet("ls-tree", flag.ContinueOnError)
 	recursive := flagSet.Bool("r", false, "recursive")
 	flagSet.SetOutput(ioc)
@@ -261,13 +261,13 @@ func LsTreeCommand(args []string, dir string, ioc *IOClient, root gitNode) (int,
 	return 0, nil
 }
 
-var dispatch = map[string]func([]string, string, *IOClient, gitNode) (int, error){
+var dispatch = map[string]func([]string, string, *IOClient, Node) (int, error){
 	"log":     LogCommand,
 	"amend":   AmendCommand,
 	"ls-tree": LsTreeCommand,
 }
 
-func RunCommand(args []string, dir string, ioc *IOClient, root *glitRoot) (int, error) {
+func RunCommand(args []string, dir string, ioc *IOClient, root *Root) (int, error) {
 	if len(args) == 0 {
 		return Usage(ioc)
 	}
@@ -287,7 +287,7 @@ func RunCommand(args []string, dir string, ioc *IOClient, root *glitRoot) (int, 
 		ioc.Println("%s", err)
 		return 2, nil
 	}
-	rootGitNode := rootInode.Operations().(gitNode)
+	rootGitNode := rootInode.Operations().(Node)
 
 	return fn(args, dir, ioc, rootGitNode)
 }
