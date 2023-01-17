@@ -11,8 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/go-git/go-git/v5"
+	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/hanwen/go-fuse/v2/fs"
 )
@@ -52,7 +53,7 @@ func findRoot(dir string, root *glitRoot) (*fs.Inode, string, error) {
 	for i, c := range components {
 		ch := current.GetChild(c)
 		if ch == nil {
-			return nil, "", fmt.Errorf("cannot find child %q at %v", c, rootInode.Path(root.EmbeddedInode()))
+			return nil, "", fmt.Errorf("cannot find child %q at %v", c, current.Path(root.EmbeddedInode()))
 		}
 
 		if _, ok := ch.Operations().(*gitFSRoot); ok {
@@ -125,7 +126,7 @@ func LogCommand(args []string, dir string, ioc *IOClient, root gitNode) (int, er
 				return err
 			}
 
-			p, err := c.Patch(parent)
+			p, err := parent.Patch(c)
 			if err != nil {
 				return err
 			}
@@ -190,9 +191,79 @@ func AmendCommand(args []string, dir string, ioc *IOClient, root gitNode) (int, 
 	return 0, nil
 }
 
+var fileModeNames = map[filemode.FileMode]string{
+	filemode.Dir:        "tree",
+	filemode.Regular:    "blob",
+	filemode.Executable: "blob",
+	filemode.Symlink:    "symlink",
+	filemode.Submodule:  "commit",
+}
+
+func lsTree(root *fs.Inode, dir string, recursive bool, ioc *IOClient) error {
+	gitNode, ok := root.Operations().(gitNode)
+	if !ok {
+		return fmt.Errorf("path %q is not a gitNode", root.Path(nil))
+	}
+
+	tree := gitNode.treeNode()
+	if tree == nil {
+		return fmt.Errorf("path %q is not a git tree", root.Path(nil))
+	}
+
+	entries, err := tree.treeEntries()
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if recursive && e.Mode == filemode.Dir {
+			lsTree(root.GetChild(e.Name), filepath.Join(dir, e.Name), recursive, ioc)
+		} else {
+			// bug - mode _> string prefixes 0.
+			ioc.Println("%s %s %s\t%s", e.Mode.String()[1:], fileModeNames[e.Mode], e.Hash, e.Name)
+		}
+	}
+
+	return nil
+}
+
+func LsTreeCommand(args []string, dir string, ioc *IOClient, root gitNode) (int, error) {
+	flagSet := flag.NewFlagSet("ls-tree", flag.ContinueOnError)
+	recursive := flagSet.Bool("r", false, "recursive")
+	flagSet.SetOutput(ioc)
+	flagSet.Usage = usage(flagSet)
+
+	if err := flagSet.Parse(args); err != nil {
+		return 2, nil // Parse already prints diagnostics.
+	}
+
+	args = flagSet.Args()
+	var components []string
+	if len(dir) > 0 {
+		components = strings.Split(dir, "/")
+	}
+
+	current := root.(fs.InodeEmbedder).EmbeddedInode()
+	for _, c := range components {
+		ch := current.GetChild(c)
+		if ch == nil {
+			return 1, fmt.Errorf("cannot find child %q at %v", c, current.Path(nil))
+		}
+
+		current = ch
+	}
+
+	if err := lsTree(current, "", *recursive, ioc); err != nil {
+		ioc.Println("lstree: %v", err)
+		return 1, nil
+	}
+
+	return 0, nil
+}
+
 var dispatch = map[string]func([]string, string, *IOClient, gitNode) (int, error){
-	"log":   LogCommand,
-	"amend": AmendCommand,
+	"log":     LogCommand,
+	"amend":   AmendCommand,
+	"ls-tree": LsTreeCommand,
 }
 
 func RunCommand(args []string, dir string, ioc *IOClient, root *glitRoot) (int, error) {

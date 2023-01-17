@@ -61,6 +61,10 @@ func (n *gitBlobNode) dirMode() filemode.FileMode {
 	return n.mode
 }
 
+func (n *gitBlobNode) treeNode() *gitTreeNode {
+	return nil
+}
+
 var _ = (fs.NodeOpener)((*gitBlobNode)(nil))
 
 func (n *gitBlobNode) Open(ctx context.Context, flags uint32) (fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
@@ -295,6 +299,7 @@ type gitNode interface {
 	gitID() (plumbing.Hash, error)
 	dirMode() filemode.FileMode
 	fsRoot() *gitFSRoot
+	treeNode() *gitTreeNode
 }
 
 type gitTreeNode struct {
@@ -305,6 +310,10 @@ type gitTreeNode struct {
 
 func (n *gitTreeNode) fsRoot() *gitFSRoot {
 	return n.root
+}
+
+func (n *gitTreeNode) treeNode() *gitTreeNode {
+	return n
 }
 
 // c&p from go-git
@@ -324,9 +333,7 @@ func (n *gitTreeNode) dirMode() filemode.FileMode {
 	return filemode.Dir
 }
 
-// ID computes the hash of the tree on the fly. We could cache this,
-// but invalidating looks hard.
-func (n *gitTreeNode) gitID() (id plumbing.Hash, err error) {
+func (n *gitTreeNode) treeEntries() ([]object.TreeEntry, error) {
 	var se sortableEntries
 	for k, v := range n.Children() {
 		ops, ok := v.Operations().(gitNode)
@@ -336,7 +343,7 @@ func (n *gitTreeNode) gitID() (id plumbing.Hash, err error) {
 
 		id, err := ops.gitID()
 		if err != nil {
-			return id, err
+			return nil, err
 		}
 
 		e := object.TreeEntry{
@@ -347,7 +354,18 @@ func (n *gitTreeNode) gitID() (id plumbing.Hash, err error) {
 		se = append(se, e)
 	}
 	sort.Sort(se)
-	t := object.Tree{Entries: []object.TreeEntry(se)}
+
+	return []object.TreeEntry(se), nil
+}
+
+// ID computes the hash of the tree on the fly. We could cache this,
+// but invalidating looks hard.
+func (n *gitTreeNode) gitID() (id plumbing.Hash, err error) {
+	entries, err := n.treeEntries()
+	if err != nil {
+		return id, err
+	}
+	t := object.Tree{Entries: entries}
 
 	enc := n.root.repo.Storer.NewEncodedObject()
 	enc.SetType(plumbing.TreeObject)
@@ -355,7 +373,9 @@ func (n *gitTreeNode) gitID() (id plumbing.Hash, err error) {
 		return id, err
 	}
 
-	return n.root.repo.Storer.SetEncodedObject(enc)
+	id, err = n.root.repo.Storer.SetEncodedObject(enc)
+	log.Printf("tree %s: %v", n.Path(nil), id)
+	return id, err
 }
 
 var _ = (fs.NodeCreater)((*gitTreeNode)(nil))
@@ -412,6 +432,10 @@ func isGlitCommit(c *object.Commit) bool {
 	return strings.Contains(c.Message[idx:], "\nGlit-Commit: yes")
 }
 
+func (r *gitFSRoot) dirMode() filemode.FileMode {
+	return filemode.Submodule
+}
+
 var mySig object.Signature
 
 func init() {
@@ -435,7 +459,7 @@ func (r *gitFSRoot) storeCommit(c *object.Commit) error {
 
 	c.Hash = id
 
-	log.Println("new commit", c.Hash)
+	log.Printf("new commit %v for tree %v", c.Hash, c.TreeHash)
 	r.commit = c
 	return nil
 }
