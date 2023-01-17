@@ -2,9 +2,10 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package glitfs
+package server
 
 import (
+	"context"
 	"fmt"
 	iofs "io/fs"
 	"io/ioutil"
@@ -14,11 +15,57 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/hanwen/gitfs/glitfs"
+	"github.com/hanwen/go-fuse/v2/fs"
+	"github.com/hanwen/go-fuse/v2/fuse"
 )
 
 type CommandServer struct {
-	root   *Root
+	root *Root
+}
+
+type Root struct {
+	*glitfs.RepoNode
 	Socket string
+}
+
+func (r *Root) OnAdd(ctx context.Context) {
+	r.RepoNode.OnAdd(ctx)
+	ch := r.NewPersistentInode(ctx, &fs.MemSymlink{
+		Data: []byte(r.Socket),
+	}, fs.StableAttr{Mode: fuse.S_IFLNK})
+	r.AddChild(".glit", ch, true)
+}
+
+func NewCommandServer(cas *glitfs.CAS, repo *git.Repository,
+	repoPath string,
+	id plumbing.Hash) (fs.InodeEmbedder, error) {
+	r, err := glitfs.NewRoot(cas, repo, repoPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	root := &Root{
+		RepoNode: r.(*glitfs.RepoNode),
+	}
+	commandServer := &CommandServer{
+		root: root,
+	}
+	l, s, err := newSocket()
+	if err != nil {
+		return nil, err
+	}
+	root.Socket = s
+	srv := rpc.NewServer()
+	if err := srv.Register(commandServer); err != nil {
+		return nil, err
+	}
+	go srv.Accept(l)
+
+	return root, nil
 }
 
 func (s *CommandServer) Exec(req *CommandRequest, rep *CommandReply) error {

@@ -10,7 +10,6 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
-	"net/rpc"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -47,21 +46,23 @@ type BlobNode struct {
 	openCount   int
 }
 
-func (n *BlobNode) fsRoot() *RepoNode {
+var _ = (Node)((*BlobNode)(nil))
+
+func (n *BlobNode) GetRepoNode() *RepoNode {
 	return n.root
 }
 
-func (n *BlobNode) gitID() (plumbing.Hash, error) {
+func (n *BlobNode) ID() (plumbing.Hash, error) {
 	return n.id, nil
 }
 
-func (n *BlobNode) dirMode() filemode.FileMode {
+func (n *BlobNode) DirMode() filemode.FileMode {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.mode
 }
 
-func (n *BlobNode) treeNode() *TreeNode {
+func (n *BlobNode) GetTreeNode() *TreeNode {
 	return nil
 }
 
@@ -296,10 +297,10 @@ func (n *BlobNode) materialize() error {
 ////////////////////////////////////////////////////////////////
 
 type Node interface {
-	gitID() (plumbing.Hash, error)
-	dirMode() filemode.FileMode
-	fsRoot() *RepoNode
-	treeNode() *TreeNode
+	ID() (plumbing.Hash, error)
+	DirMode() filemode.FileMode
+	GetRepoNode() *RepoNode
+	GetTreeNode() *TreeNode
 }
 
 type TreeNode struct {
@@ -308,11 +309,13 @@ type TreeNode struct {
 	root *RepoNode
 }
 
-func (n *TreeNode) fsRoot() *RepoNode {
+var _ = (Node)((*TreeNode)(nil))
+
+func (n *TreeNode) GetRepoNode() *RepoNode {
 	return n.root
 }
 
-func (n *TreeNode) treeNode() *TreeNode {
+func (n *TreeNode) GetTreeNode() *TreeNode {
 	return n
 }
 
@@ -329,11 +332,11 @@ func (se sortableEntries) Len() int               { return len(se) }
 func (se sortableEntries) Less(i int, j int) bool { return se.sortName(se[i]) < se.sortName(se[j]) }
 func (se sortableEntries) Swap(i int, j int)      { se[i], se[j] = se[j], se[i] }
 
-func (n *TreeNode) dirMode() filemode.FileMode {
+func (n *TreeNode) DirMode() filemode.FileMode {
 	return filemode.Dir
 }
 
-func (n *TreeNode) treeEntries() ([]object.TreeEntry, error) {
+func (n *TreeNode) TreeEntries() ([]object.TreeEntry, error) {
 	var se sortableEntries
 	for k, v := range n.Children() {
 		ops, ok := v.Operations().(Node)
@@ -341,14 +344,14 @@ func (n *TreeNode) treeEntries() ([]object.TreeEntry, error) {
 			continue
 		}
 
-		id, err := ops.gitID()
+		id, err := ops.ID()
 		if err != nil {
 			return nil, err
 		}
 
 		e := object.TreeEntry{
 			Name: k,
-			Mode: ops.dirMode(),
+			Mode: ops.DirMode(),
 			Hash: id,
 		}
 		se = append(se, e)
@@ -360,8 +363,8 @@ func (n *TreeNode) treeEntries() ([]object.TreeEntry, error) {
 
 // ID computes the hash of the tree on the fly. We could cache this,
 // but invalidating looks hard.
-func (n *TreeNode) gitID() (id plumbing.Hash, err error) {
-	entries, err := n.treeEntries()
+func (n *TreeNode) ID() (id plumbing.Hash, err error) {
+	entries, err := n.TreeEntries()
 	if err != nil {
 		return id, err
 	}
@@ -423,6 +426,12 @@ type RepoNode struct {
 	commit *object.Commit
 }
 
+var _ = (Node)((*RepoNode)(nil))
+
+func (n *RepoNode) Repository() *git.Repository {
+	return n.repo
+}
+
 func isGlitCommit(c *object.Commit) bool {
 	idx := strings.LastIndex(c.Message, "\n\n")
 	if idx == -1 {
@@ -460,7 +469,7 @@ func setGlitCommit(msg string, h plumbing.Hash) string {
 	return body + "\n\n" + strings.Join(newLines, "\n") + "\n"
 }
 
-func (r *RepoNode) dirMode() filemode.FileMode {
+func (r *RepoNode) DirMode() filemode.FileMode {
 	return filemode.Submodule
 }
 
@@ -473,7 +482,11 @@ func init() {
 	mySig.Email = fmt.Sprintf("%s@localhost", u.Username)
 }
 
-func (r *RepoNode) storeCommit(c *object.Commit) error {
+func (r *RepoNode) GetCommit() object.Commit {
+	return *r.commit
+}
+
+func (r *RepoNode) StoreCommit(c *object.Commit) error {
 	enc := r.repo.Storer.NewEncodedObject()
 	enc.SetType(plumbing.CommitObject)
 	if err := c.Encode(enc); err != nil {
@@ -492,9 +505,9 @@ func (r *RepoNode) storeCommit(c *object.Commit) error {
 	return nil
 }
 
-func (r *RepoNode) gitID() (plumbing.Hash, error) {
+func (r *RepoNode) ID() (plumbing.Hash, error) {
 	lastTree := r.commit.TreeHash
-	treeID, err := r.TreeNode.gitID()
+	treeID, err := r.TreeNode.ID()
 	if err != nil {
 		return plumbing.ZeroHash, err
 	}
@@ -517,7 +530,7 @@ func (r *RepoNode) gitID() (plumbing.Hash, error) {
 				ParentHashes: []plumbing.Hash{r.commit.Hash},
 			}
 		}
-		r.storeCommit(&c)
+		r.StoreCommit(&c)
 	}
 
 	return r.commit.Hash, nil
@@ -574,45 +587,6 @@ func NewRoot(cas *CAS, repo *git.Repository,
 	root.root = root
 
 	return root, nil
-}
-
-type Root struct {
-	*RepoNode
-	rpcServer CommandServer
-}
-
-func (r *Root) OnAdd(ctx context.Context) {
-	r.RepoNode.OnAdd(ctx)
-	ch := r.NewPersistentInode(ctx, &fs.MemSymlink{
-		Data: []byte(r.rpcServer.Socket),
-	}, fs.StableAttr{Mode: fuse.S_IFLNK})
-	r.AddChild(".glit", ch, true)
-}
-
-func NewGlitRoot(cas *CAS, repo *git.Repository,
-	repoPath string,
-	id plumbing.Hash) (fs.InodeEmbedder, error) {
-	r, err := NewRoot(cas, repo, repoPath, id)
-	if err != nil {
-		return nil, err
-	}
-
-	rg := &Root{
-		RepoNode: r.(*RepoNode),
-	}
-	rg.rpcServer.root = rg
-	l, s, err := newSocket()
-	if err != nil {
-		return nil, err
-	}
-	rg.rpcServer.Socket = s
-	srv := rpc.NewServer()
-	if err := srv.Register(&rg.rpcServer); err != nil {
-		return nil, err
-	}
-	go srv.Accept(l)
-
-	return rg, nil
 }
 
 func (r *RepoNode) newGitBlobNode(ctx context.Context, mode filemode.FileMode, obj *object.Blob) (*fs.Inode, error) {

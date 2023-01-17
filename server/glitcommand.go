@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package glitfs
+package server
 
 import (
 	"flag"
@@ -15,6 +15,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/hanwen/gitfs/glitfs"
 	"github.com/hanwen/go-fuse/v2/fs"
 )
 
@@ -56,7 +57,7 @@ func findRoot(dir string, root *Root) (*fs.Inode, string, error) {
 			return nil, "", fmt.Errorf("cannot find child %q at %v", c, current.Path(root.EmbeddedInode()))
 		}
 
-		if _, ok := ch.Operations().(*RepoNode); ok {
+		if _, ok := ch.Operations().(*glitfs.RepoNode); ok {
 			rootInode = ch
 			rootIdx = i
 		}
@@ -67,7 +68,7 @@ func findRoot(dir string, root *Root) (*fs.Inode, string, error) {
 	return rootInode, strings.Join(components[rootIdx:], "/"), nil
 }
 
-func LogCommand(args []string, dir string, ioc *IOClient, root Node) (int, error) {
+func LogCommand(args []string, dir string, ioc *IOClient, root glitfs.Node) (int, error) {
 	fs := flag.NewFlagSet("log", flag.ContinueOnError)
 	patch := fs.Bool("p", false, "show patches")
 	fs.Bool("help", false, "show help")
@@ -86,7 +87,7 @@ func LogCommand(args []string, dir string, ioc *IOClient, root Node) (int, error
 		startHash = plumbing.NewHash(args[0])
 		args = args[1:]
 	} else {
-		startHash, err = root.gitID()
+		startHash, err = root.ID()
 		if err != nil {
 			ioc.Println("root.gitID: %v", err)
 			return 2, nil
@@ -105,9 +106,9 @@ func LogCommand(args []string, dir string, ioc *IOClient, root Node) (int, error
 		opts.PathFilter = newPathFilter(filtered)
 	}
 
-	iter, err := root.fsRoot().repo.Log(opts)
+	iter, err := root.GetRepoNode().Repository().Log(opts)
 	if err != nil {
-		ioc.Println("Log: %v\n", err)
+		ioc.Println("Log(%v): %v\n", opts, err)
 		return 1, nil
 	}
 
@@ -154,11 +155,11 @@ func LogCommand(args []string, dir string, ioc *IOClient, root Node) (int, error
 	return 0, nil
 }
 
-func amend(ioc *IOClient, root Node) error {
+func amend(ioc *IOClient, root glitfs.Node) error {
 	// Update commit
-	root.fsRoot().gitID()
+	root.GetRepoNode().ID()
 
-	c := *root.fsRoot().commit
+	c := root.GetRepoNode().GetCommit()
 
 	msg := `# provide a new commit message below.
 # remove the Glit-Commit footer for further edits to
@@ -180,10 +181,10 @@ func amend(ioc *IOClient, root Node) error {
 
 	c.Message = strings.Join(lines, "\n")
 
-	return root.fsRoot().storeCommit(&c)
+	return root.GetRepoNode().StoreCommit(&c)
 }
 
-func AmendCommand(args []string, dir string, ioc *IOClient, root Node) (int, error) {
+func AmendCommand(args []string, dir string, ioc *IOClient, root glitfs.Node) (int, error) {
 	if err := amend(ioc, root); err != nil {
 		ioc.Println("%v", err)
 		return 2, nil
@@ -200,17 +201,17 @@ var fileModeNames = map[filemode.FileMode]string{
 }
 
 func lsTree(root *fs.Inode, dir string, recursive bool, ioc *IOClient) error {
-	Node, ok := root.Operations().(Node)
+	Node, ok := root.Operations().(glitfs.Node)
 	if !ok {
 		return fmt.Errorf("path %q is not a Node", root.Path(nil))
 	}
 
-	tree := Node.treeNode()
+	tree := Node.GetTreeNode()
 	if tree == nil {
 		return fmt.Errorf("path %q is not a git tree", root.Path(nil))
 	}
 
-	entries, err := tree.treeEntries()
+	entries, err := tree.TreeEntries()
 	if err != nil {
 		return err
 	}
@@ -227,7 +228,7 @@ func lsTree(root *fs.Inode, dir string, recursive bool, ioc *IOClient) error {
 	return nil
 }
 
-func LsTreeCommand(args []string, dir string, ioc *IOClient, root Node) (int, error) {
+func LsTreeCommand(args []string, dir string, ioc *IOClient, root glitfs.Node) (int, error) {
 	flagSet := flag.NewFlagSet("ls-tree", flag.ContinueOnError)
 	recursive := flagSet.Bool("r", false, "recursive")
 	flagSet.SetOutput(ioc)
@@ -261,7 +262,7 @@ func LsTreeCommand(args []string, dir string, ioc *IOClient, root Node) (int, er
 	return 0, nil
 }
 
-var dispatch = map[string]func([]string, string, *IOClient, Node) (int, error){
+var dispatch = map[string]func([]string, string, *IOClient, glitfs.Node) (int, error){
 	"log":     LogCommand,
 	"amend":   AmendCommand,
 	"ls-tree": LsTreeCommand,
@@ -287,7 +288,7 @@ func RunCommand(args []string, dir string, ioc *IOClient, root *Root) (int, erro
 		ioc.Println("%s", err)
 		return 2, nil
 	}
-	rootGitNode := rootInode.Operations().(Node)
+	rootGitNode := rootInode.Operations().(glitfs.Node)
 
 	return fn(args, dir, ioc, rootGitNode)
 }
