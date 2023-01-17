@@ -9,14 +9,14 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/hanwen/gitfs/fs"
+	"github.com/hanwen/gitfs/glitfs"
 	fusefs "github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 )
 
 func main() {
 	repoPath := flag.String("repo", "", "")
-	casDir := flag.String("cas", filepath.Join(os.Getenv("HOME"), ".cache", "gitfs2"), "")
+	casDir := flag.String("cas", filepath.Join(os.Getenv("HOME"), ".cache", "glitfs2"), "")
 
 	id := flag.String("id", "", "")
 	flag.Parse()
@@ -36,11 +36,11 @@ func main() {
 
 	h := plumbing.NewHash(*id) // err handling?
 
-	cas, err := fs.NewCAS(*casDir)
+	cas, err := glitfs.NewCAS(*casDir)
 	if err != nil {
 		log.Fatal("NewCAS", err)
 	}
-	root, err := fs.NewGlitRoot(cas, repo, *repoPath, h)
+	root, err := glitfs.NewGlitRoot(cas, repo, *repoPath, h)
 	if err != nil {
 		log.Fatal("NewRoot", err)
 	}

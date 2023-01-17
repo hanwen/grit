@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/hanwen/gitfs/fs"
+	"github.com/hanwen/gitfs/glitfs"
 )
 
 func main() {
@@ -26,7 +26,7 @@ func main() {
 	}
 
 	*dir = filepath.Clean(*dir)
-	sock, topdir, err := fs.FindGlitSocket(*dir)
+	sock, topdir, err := glitfs.FindGlitSocket(*dir)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func main() {
 	if relCWD == "." {
 		relCWD = ""
 	}
-	code, err := fs.ClientRun(sock, flag.Args(), relCWD)
+	code, err := glitfs.ClientRun(sock, flag.Args(), relCWD)
 	if err != nil {
 		log.Fatal(err)
 	}
