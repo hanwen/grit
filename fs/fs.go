@@ -382,9 +382,10 @@ var _ = (fs.NodeCreater)((*gitTreeNode)(nil))
 
 func (n *gitTreeNode) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (node *fs.Inode, fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
 	if mode&0111 != 0 {
-		mode = 0755
+		mode = 0755 | fuse.S_IFREG
+	} else {
+		mode = 0644 | fuse.S_IFREG
 	}
-
 	bn := &gitBlobNode{
 		root: n.root,
 		mode: filemode.FileMode(mode),
