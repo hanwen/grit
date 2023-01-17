@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/hanwen/gitfs/server"
+	"github.com/hanwen/glitfs/server"
 )
 
 func main() {
