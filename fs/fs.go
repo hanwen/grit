@@ -635,9 +635,15 @@ func (r *gitFSRoot) newSubmoduleNode(ctx context.Context, mods *config.Modules, 
 	repoPath := filepath.Join(r.repoPath, "modules", submod.Name)
 	subRepo, err := git.PlainOpen(repoPath)
 	if err != nil {
+		// WTF - this varies across git versions?!
+		log.Printf("can't find %s", repoPath)
+		repoPath = filepath.Join(r.repoPath, "modules", strings.Replace(submod.Name, "/", "%2f", -1))
+		subRepo, err = git.PlainOpen(repoPath)
+	}
+	if err != nil {
+		log.Printf("can't find %s", repoPath)
 		return nil, err
 	}
-
 	ops, err := NewRoot(r.cas, subRepo, repoPath, id)
 	if err != nil {
 		return nil, err
