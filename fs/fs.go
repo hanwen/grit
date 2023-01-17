@@ -374,7 +374,6 @@ func (n *gitTreeNode) gitID() (id plumbing.Hash, err error) {
 	}
 
 	id, err = n.root.repo.Storer.SetEncodedObject(enc)
-	log.Printf("tree %s: %v", n.Path(nil), id)
 	return id, err
 }
 
