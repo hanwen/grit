@@ -41,6 +41,8 @@ func usage(fs *flag.FlagSet) func() {
 	}
 }
 
+// findRoot finds the repo root (as opposed to the superproject root
+// which is the mountpoint.)
 func findRoot(dir string, root *Root) (*fs.Inode, string, error) {
 	rootInode := root.EmbeddedInode()
 	rootIdx := 0
@@ -192,6 +194,100 @@ func AmendCommand(args []string, dir string, ioc *IOClient, root glitfs.Node) (i
 	return 0, nil
 }
 
+func commit(args []string, dir string, ioc *IOClient, root glitfs.Node) error {
+	repoNode := root.GetRepoNode()
+	repoNode.ID() // trigger recomputation.
+	c := repoNode.GetCommit()
+	if !glitfs.IsGlitCommit(&c) {
+		ioc.Println("no pending work to commit.")
+		return nil
+	}
+
+	flagSet := flag.NewFlagSet("commit", flag.ContinueOnError)
+	msg := flagSet.String("m", "", "commit message")
+	flagSet.SetOutput(ioc)
+	flagSet.Usage = usage(flagSet)
+
+	if err := flagSet.Parse(args); err != nil {
+		return nil // Parse already prints diagnostics.
+	}
+
+	parent, err := c.Parent(0)
+	if err != nil {
+		return err
+	}
+	if len(flagSet.Args()) > 0 {
+		var changes []object.TreeEntry
+		for _, a := range flagSet.Args() {
+			p := filepath.Clean(filepath.Join(dir, a))
+			c, err := walkPath(repoNode.EmbeddedInode(), p)
+			if err != nil {
+				return err
+			}
+
+			if blob, ok := c.Operations().(*glitfs.BlobNode); !ok {
+				return fmt.Errorf("path %q is not a file (%T)", a, c)
+			} else {
+				id, err := blob.ID()
+				if err != nil {
+					return err
+				}
+				changes = append(changes,
+					object.TreeEntry{Name: p, Mode: blob.DirMode(), Hash: id})
+			}
+		}
+
+		prevTree, err := repoNode.Repository().TreeObject(parent.TreeHash)
+		if err != nil {
+			return err
+		}
+		id, err := PatchTree(repoNode.Repository().Storer, prevTree, changes)
+		c.TreeHash = id
+	}
+
+	if *msg != "" {
+		c.Message = *msg
+	} else {
+		stats, err := c.Stats()
+		if err != nil {
+			return err
+		}
+		msg := `#
+# You are about to commit the following files: 
+#
+`
+		for _, st := range stats {
+			msg += fmt.Sprintf("# (+%-4d, -%-4d) %s\n", st.Addition, st.Deletion, st.Name)
+		}
+		msg += "#\n# Provide a commit message:\n\n"
+
+		msg += glitfs.SetGlitCommit(c.Message, plumbing.ZeroHash)
+
+		data, err := ioc.Edit([]byte(msg))
+		if err != nil {
+			return err
+		}
+
+		c.Message = strings.TrimSpace(string(data))
+	}
+
+	if err := repoNode.StoreCommit(&c); err != nil {
+		return err
+	}
+
+	// If other files were still changed, a new snapshot is generated automatically.
+
+	return nil
+}
+
+func CommitCommand(args []string, dir string, ioc *IOClient, root glitfs.Node) (int, error) {
+	if err := commit(args, dir, ioc, root); err != nil {
+		ioc.Println("%v", err)
+		return 2, nil
+	}
+	return 0, nil
+}
+
 var fileModeNames = map[filemode.FileMode]string{
 	filemode.Dir:        "tree",
 	filemode.Regular:    "blob",
@@ -220,12 +316,30 @@ func lsTree(root *fs.Inode, dir string, recursive bool, ioc *IOClient) error {
 		if recursive && e.Mode == filemode.Dir {
 			lsTree(root.GetChild(e.Name), fn, recursive, ioc)
 		} else {
-			// bug - mode _> string prefixes 0.
+			// bug - mode -> string prefixes 0.
 			ioc.Println("%s %s %s\t%s", e.Mode.String()[1:], fileModeNames[e.Mode], e.Hash, fn)
 		}
 	}
 
 	return nil
+}
+
+func walkPath(root *fs.Inode, path string) (*fs.Inode, error) {
+	var components []string
+	if len(path) > 0 {
+		components = strings.Split(path, "/")
+	}
+
+	current := root
+	for _, c := range components {
+		ch := current.GetChild(c)
+		if ch == nil {
+			return nil, fmt.Errorf("cannot find child %q at %v", c, current.Path(nil))
+		}
+
+		current = ch
+	}
+	return current, nil
 }
 
 func LsTreeCommand(args []string, dir string, ioc *IOClient, root glitfs.Node) (int, error) {
@@ -238,22 +352,11 @@ func LsTreeCommand(args []string, dir string, ioc *IOClient, root glitfs.Node) (
 		return 2, nil // Parse already prints diagnostics.
 	}
 
+	current, err := walkPath(root.(fs.InodeEmbedder).EmbeddedInode(), dir)
+	if err != nil {
+		ioc.Println("%s", err)
+	}
 	args = flagSet.Args()
-	var components []string
-	if len(dir) > 0 {
-		components = strings.Split(dir, "/")
-	}
-
-	current := root.(fs.InodeEmbedder).EmbeddedInode()
-	for _, c := range components {
-		ch := current.GetChild(c)
-		if ch == nil {
-			return 1, fmt.Errorf("cannot find child %q at %v", c, current.Path(nil))
-		}
-
-		current = ch
-	}
-
 	if err := lsTree(current, "", *recursive, ioc); err != nil {
 		ioc.Println("lstree: %v", err)
 		return 1, nil
@@ -266,6 +369,7 @@ var dispatch = map[string]func([]string, string, *IOClient, glitfs.Node) (int, e
 	"log":     LogCommand,
 	"amend":   AmendCommand,
 	"ls-tree": LsTreeCommand,
+	"commit":  CommitCommand,
 }
 
 func RunCommand(args []string, dir string, ioc *IOClient, root *Root) (int, error) {
