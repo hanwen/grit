@@ -15,6 +15,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/hanwen/glitfs/glitfs"
 	"github.com/hanwen/go-fuse/v2/fs"
 )
@@ -114,7 +115,6 @@ func LogCommand(args []string, dir string, ioc *IOClient, root glitfs.Node) (int
 		return 1, nil
 	}
 
-	stop := fmt.Errorf("stop")
 	if err := iter.ForEach(func(c *object.Commit) error {
 		_, err := ioc.Println("%v", c)
 
@@ -142,16 +142,14 @@ func LogCommand(args []string, dir string, ioc *IOClient, root glitfs.Node) (int
 		if *commitCount > 0 {
 			*commitCount--
 			if *commitCount == 0 {
-				return stop
+				return storer.ErrStop
 			}
 		}
 
 		// propagate err if client went away
 		return err
 	}); err != nil {
-		if err != stop {
-			log.Printf("ForEach: %v", err)
-		}
+		log.Printf("ForEach: %v", err)
 	}
 
 	return 0, nil
