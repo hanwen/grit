@@ -491,6 +491,8 @@ func init() {
 	mySig.Email = fmt.Sprintf("%s@localhost", u.Username)
 }
 
+// Returns the commit currently stored in the repo node; does not
+// recompute. Use ID() for that.
 func (r *RepoNode) GetCommit() object.Commit {
 	return *r.commit
 }
