@@ -29,7 +29,7 @@ Change-Id: 123
 Glit-Amends: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
 Bug: 123
 `} {
-		got := setGlitCommit(in, h)
+		got := SetGlitCommit(in, h)
 		if got != want {
 			t.Errorf("setGlitCommit(%s): got:\n%swant:\n%s", in, got, want)
 		}

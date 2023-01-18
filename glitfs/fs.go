@@ -320,6 +320,7 @@ func (n *TreeNode) GetTreeNode() *TreeNode {
 }
 
 // c&p from go-git
+
 type sortableEntries []object.TreeEntry
 
 func (sortableEntries) sortName(te object.TreeEntry) string {
@@ -332,12 +333,17 @@ func (se sortableEntries) Len() int               { return len(se) }
 func (se sortableEntries) Less(i int, j int) bool { return se.sortName(se[i]) < se.sortName(se[j]) }
 func (se sortableEntries) Swap(i int, j int)      { se[i], se[j] = se[j], se[i] }
 
+func SortTreeEntries(es []object.TreeEntry) {
+	se := sortableEntries(es)
+	sort.Sort(se)
+}
+
 func (n *TreeNode) DirMode() filemode.FileMode {
 	return filemode.Dir
 }
 
 func (n *TreeNode) TreeEntries() ([]object.TreeEntry, error) {
-	var se sortableEntries
+	var se []object.TreeEntry
 	for k, v := range n.Children() {
 		ops, ok := v.Operations().(Node)
 		if !ok {
@@ -356,9 +362,9 @@ func (n *TreeNode) TreeEntries() ([]object.TreeEntry, error) {
 		}
 		se = append(se, e)
 	}
-	sort.Sort(se)
+	SortTreeEntries(se)
 
-	return []object.TreeEntry(se), nil
+	return se, nil
 }
 
 // ID computes the hash of the tree on the fly. We could cache this,
@@ -432,7 +438,7 @@ func (n *RepoNode) Repository() *git.Repository {
 	return n.repo
 }
 
-func isGlitCommit(c *object.Commit) bool {
+func IsGlitCommit(c *object.Commit) bool {
 	idx := strings.LastIndex(c.Message, "\n\n")
 	if idx == -1 {
 		return false
@@ -441,7 +447,7 @@ func isGlitCommit(c *object.Commit) bool {
 	return strings.Contains(c.Message[idx:], "\nGlit-Amends: ")
 }
 
-func setGlitCommit(msg string, h plumbing.Hash) string {
+func SetGlitCommit(msg string, h plumbing.Hash) string {
 	footerIdx := strings.LastIndex(msg, "\n\n")
 	var lines []string
 	body := msg
@@ -450,6 +456,9 @@ func setGlitCommit(msg string, h plumbing.Hash) string {
 		body = msg[:footerIdx]
 	}
 	newLine := "Glit-Amends: " + h.String()
+	if h == plumbing.ZeroHash {
+		newLine = ""
+	}
 	seen := false
 
 	var newLines []string
@@ -493,12 +502,16 @@ func (r *RepoNode) StoreCommit(c *object.Commit) error {
 		return err
 	}
 
-	id, err := r.repo.Storer.SetEncodedObject(enc)
+	_, err := r.repo.Storer.SetEncodedObject(enc)
 	if err != nil {
 		return err
 	}
 
-	c.Hash = id
+	// decode the object again so it has a Storer reference.
+	c, err = object.DecodeCommit(r.repo.Storer, enc)
+	if err != nil {
+		return err
+	}
 
 	log.Printf("new commit %v for tree %v", c.Hash, c.TreeHash)
 	r.commit = c
@@ -514,15 +527,15 @@ func (r *RepoNode) ID() (plumbing.Hash, error) {
 
 	if lastTree != treeID {
 		c := *r.commit
-		if isGlitCommit(r.commit) {
+		if IsGlitCommit(r.commit) {
 			// amend commit
 			c.TreeHash = treeID
-			c.Message = setGlitCommit(r.commit.Message, r.commit.Hash)
+			c.Message = SetGlitCommit(r.commit.Message, r.commit.Hash)
 		} else {
 			mySig.When = time.Now()
 			ts := time.Now().Format(time.RFC822Z)
 			c = object.Commit{
-				Message: setGlitCommit(fmt.Sprintf(
+				Message: SetGlitCommit(fmt.Sprintf(
 					`Snapshot originally created %v for tree %v`, ts, treeID), r.commit.Hash),
 				Author:       mySig,
 				Committer:    mySig,
