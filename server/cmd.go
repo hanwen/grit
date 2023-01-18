@@ -100,6 +100,7 @@ type WriteReply struct {
 }
 
 type EditRequest struct {
+	Name string
 	Data []byte
 }
 
@@ -131,8 +132,8 @@ func NewIOClient(sock string) (*IOClient, error) {
 	return ioClient, nil
 }
 
-func (ioc *IOClient) Edit(data []byte) ([]byte, error) {
-	req := EditRequest{data}
+func (ioc *IOClient) Edit(name string, data []byte) ([]byte, error) {
+	req := EditRequest{Data: data, Name: name}
 	rep := EditReply{}
 
 	err := ioc.client.Call("IOServer.Edit", &req, &rep)
@@ -188,7 +189,7 @@ func (s *IOServer) Write(req *WriteRequest, rep *WriteReply) error {
 }
 
 func (s *IOServer) Edit(req *EditRequest, rep *EditReply) error {
-	f, err := ioutil.TempFile("", "")
+	f, err := ioutil.TempFile("", req.Name)
 	if err != nil {
 		return err
 	}

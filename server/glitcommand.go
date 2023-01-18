@@ -168,7 +168,7 @@ func amend(ioc *IOClient, root glitfs.Node) error {
 # create a new commit
 
 ` + c.Message
-	data, err := ioc.Edit([]byte(msg))
+	data, err := ioc.Edit("commit-message", []byte(msg))
 	if err != nil {
 		return err
 	}
@@ -261,14 +261,19 @@ func commit(args []string, dir string, ioc *IOClient, root glitfs.Node) error {
 		}
 		msg += "#\n# Provide a commit message:\n\n"
 
-		msg += glitfs.SetGlitCommit(c.Message, plumbing.ZeroHash)
+		before := strings.TrimSpace(glitfs.SetGlitCommit(c.Message, plumbing.ZeroHash))
+		msg += before
 
-		data, err := ioc.Edit([]byte(msg))
+		data, err := ioc.Edit("commit-message", []byte(msg))
 		if err != nil {
 			return err
 		}
 
-		c.Message = strings.TrimSpace(string(data))
+		after := strings.TrimSpace(string(data))
+		if before == after {
+			return fmt.Errorf("must provide a message")
+		}
+		c.Message = after
 	}
 
 	if err := repoNode.StoreCommit(&c); err != nil {
