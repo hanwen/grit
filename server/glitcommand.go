@@ -68,7 +68,7 @@ func findRoot(dir string, root *Root) (*fs.Inode, string, error) {
 		current = ch
 	}
 
-	return rootInode, strings.Join(components[rootIdx:], "/"), nil
+	return rootInode, strings.Join(components[rootIdx+1:], "/"), nil
 }
 
 func LogCommand(args []string, dir string, ioc *IOClient, root glitfs.Node) (int, error) {
@@ -355,9 +355,11 @@ func LsTreeCommand(args []string, dir string, ioc *IOClient, root glitfs.Node) (
 		return 2, nil // Parse already prints diagnostics.
 	}
 
-	current, err := walkPath(root.(fs.InodeEmbedder).EmbeddedInode(), dir)
+	inode := root.(fs.InodeEmbedder).EmbeddedInode()
+	current, err := walkPath(inode, dir)
 	if err != nil {
 		ioc.Println("%s", err)
+		return 1, nil
 	}
 	args = flagSet.Args()
 	if err := lsTree(current, "", *recursive, ioc); err != nil {
