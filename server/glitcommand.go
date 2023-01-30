@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	git "github.com/go-git/go-git/v5"
@@ -19,11 +20,6 @@ import (
 	"github.com/hanwen/glitfs/glitfs"
 	"github.com/hanwen/go-fuse/v2/fs"
 )
-
-func Usage(ioc *IOClient) (int, error) {
-	ioc.Printf("Usage blah blah\n")
-	return 0, nil
-}
 
 func newPathFilter(filter []string) func(s string) bool {
 	return func(path string) bool {
@@ -375,6 +371,21 @@ var dispatch = map[string]func([]string, string, *IOClient, glitfs.Node) (int, e
 	"amend":   AmendCommand,
 	"ls-tree": LsTreeCommand,
 	"commit":  CommitCommand,
+}
+
+func Usage(ioc *IOClient) (int, error) {
+	ioc.Printf("Usage: glit <subcommand>\n\nAvailable subcommands:\n\n")
+	var ks []string
+	for k := range dispatch {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	for _, k := range ks {
+		ioc.Printf("  %s\n", k)
+	}
+
+	ioc.Println("")
+	return 0, nil
 }
 
 func RunCommand(args []string, dir string, ioc *IOClient, root *Root) (int, error) {
