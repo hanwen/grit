@@ -13,7 +13,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
-	"github.com/hanwen/glitfs/glitfs"
+	"github.com/hanwen/gritfs/gritfs"
 )
 
 type lazyTreeNode struct {
@@ -59,7 +59,7 @@ func (n *lazyTreeNode) encode(s storer.EncodedObjectStorer) (plumbing.Hash, erro
 			})
 		}
 	}
-	glitfs.SortTreeEntries(es)
+	gritfs.SortTreeEntries(es)
 
 	t := object.Tree{Entries: es}
 

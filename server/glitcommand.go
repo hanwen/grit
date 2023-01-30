@@ -17,8 +17,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
-	"github.com/hanwen/glitfs/glitfs"
 	"github.com/hanwen/go-fuse/v2/fs"
+	"github.com/hanwen/gritfs/gritfs"
 )
 
 func newPathFilter(filter []string) func(s string) bool {
@@ -56,7 +56,7 @@ func findRoot(dir string, root *Root) (*fs.Inode, string, error) {
 			return nil, "", fmt.Errorf("cannot find child %q at %v", c, current.Path(root.EmbeddedInode()))
 		}
 
-		if _, ok := ch.Operations().(*glitfs.RepoNode); ok {
+		if _, ok := ch.Operations().(*gritfs.RepoNode); ok {
 			rootInode = ch
 			rootIdx = i
 		}
@@ -67,7 +67,7 @@ func findRoot(dir string, root *Root) (*fs.Inode, string, error) {
 	return rootInode, strings.Join(components[rootIdx+1:], "/"), nil
 }
 
-func LogCommand(args []string, dir string, ioc *IOClient, root glitfs.Node) (int, error) {
+func LogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
 	fs := flag.NewFlagSet("log", flag.ContinueOnError)
 	patch := fs.Bool("p", false, "show patches")
 	fs.Bool("help", false, "show help")
@@ -151,14 +151,14 @@ func LogCommand(args []string, dir string, ioc *IOClient, root glitfs.Node) (int
 	return 0, nil
 }
 
-func amend(ioc *IOClient, root glitfs.Node) error {
+func amend(ioc *IOClient, root gritfs.Node) error {
 	// Update commit
 	root.GetRepoNode().ID()
 
 	c := root.GetRepoNode().GetCommit()
 
 	msg := `# provide a new commit message below.
-# remove the Glit-Commit footer for further edits to
+# remove the Grit-Commit footer for further edits to
 # create a new commit
 
 ` + c.Message
@@ -180,7 +180,7 @@ func amend(ioc *IOClient, root glitfs.Node) error {
 	return root.GetRepoNode().StoreCommit(&c)
 }
 
-func AmendCommand(args []string, dir string, ioc *IOClient, root glitfs.Node) (int, error) {
+func AmendCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
 	if err := amend(ioc, root); err != nil {
 		ioc.Println("%v", err)
 		return 2, nil
@@ -188,11 +188,11 @@ func AmendCommand(args []string, dir string, ioc *IOClient, root glitfs.Node) (i
 	return 0, nil
 }
 
-func commit(args []string, dir string, ioc *IOClient, root glitfs.Node) error {
+func commit(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 	repoNode := root.GetRepoNode()
 	repoNode.ID() // trigger recomputation.
 	c := repoNode.GetCommit()
-	if !glitfs.IsGlitCommit(&c) {
+	if !gritfs.IsGritCommit(&c) {
 		ioc.Println("no pending work to commit.")
 		return nil
 	}
@@ -219,7 +219,7 @@ func commit(args []string, dir string, ioc *IOClient, root glitfs.Node) error {
 				return err
 			}
 
-			if blob, ok := c.Operations().(*glitfs.BlobNode); !ok {
+			if blob, ok := c.Operations().(*gritfs.BlobNode); !ok {
 				return fmt.Errorf("path %q is not a file (%T)", a, c)
 			} else {
 				id, err := blob.ID()
@@ -255,7 +255,7 @@ func commit(args []string, dir string, ioc *IOClient, root glitfs.Node) error {
 		}
 		msg += "#\n# Provide a commit message:\n\n"
 
-		before := strings.TrimSpace(glitfs.SetGlitCommit(c.Message, plumbing.ZeroHash))
+		before := strings.TrimSpace(gritfs.SetGritCommit(c.Message, plumbing.ZeroHash))
 		msg += before
 
 		data, err := ioc.Edit("commit-message", []byte(msg))
@@ -279,7 +279,7 @@ func commit(args []string, dir string, ioc *IOClient, root glitfs.Node) error {
 	return nil
 }
 
-func CommitCommand(args []string, dir string, ioc *IOClient, root glitfs.Node) (int, error) {
+func CommitCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
 	if err := commit(args, dir, ioc, root); err != nil {
 		ioc.Println("%v", err)
 		return 2, nil
@@ -296,7 +296,7 @@ var fileModeNames = map[filemode.FileMode]string{
 }
 
 func lsTree(root *fs.Inode, dir string, recursive bool, ioc *IOClient) error {
-	Node, ok := root.Operations().(glitfs.Node)
+	Node, ok := root.Operations().(gritfs.Node)
 	if !ok {
 		return fmt.Errorf("path %q is not a Node", root.Path(nil))
 	}
@@ -341,7 +341,7 @@ func walkPath(root *fs.Inode, path string) (*fs.Inode, error) {
 	return current, nil
 }
 
-func LsTreeCommand(args []string, dir string, ioc *IOClient, root glitfs.Node) (int, error) {
+func LsTreeCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
 	flagSet := flag.NewFlagSet("ls-tree", flag.ContinueOnError)
 	recursive := flagSet.Bool("r", false, "recursive")
 	flagSet.SetOutput(ioc)
@@ -366,7 +366,7 @@ func LsTreeCommand(args []string, dir string, ioc *IOClient, root glitfs.Node) (
 	return 0, nil
 }
 
-var dispatch = map[string]func([]string, string, *IOClient, glitfs.Node) (int, error){
+var dispatch = map[string]func([]string, string, *IOClient, gritfs.Node) (int, error){
 	"log":     LogCommand,
 	"amend":   AmendCommand,
 	"ls-tree": LsTreeCommand,
@@ -374,7 +374,7 @@ var dispatch = map[string]func([]string, string, *IOClient, glitfs.Node) (int, e
 }
 
 func Usage(ioc *IOClient) (int, error) {
-	ioc.Printf("Usage: glit <subcommand>\n\nAvailable subcommands:\n\n")
+	ioc.Printf("Usage: grit <subcommand>\n\nAvailable subcommands:\n\n")
 	var ks []string
 	for k := range dispatch {
 		ks = append(ks, k)
@@ -408,7 +408,7 @@ func RunCommand(args []string, dir string, ioc *IOClient, root *Root) (int, erro
 		ioc.Println("%s", err)
 		return 2, nil
 	}
-	rootGitNode := rootInode.Operations().(glitfs.Node)
+	rootGitNode := rootInode.Operations().(gritfs.Node)
 
 	return fn(args, dir, ioc, rootGitNode)
 }

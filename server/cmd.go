@@ -18,9 +18,9 @@ import (
 
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/hanwen/glitfs/glitfs"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	"github.com/hanwen/gritfs/gritfs"
 )
 
 type CommandServer struct {
@@ -28,7 +28,7 @@ type CommandServer struct {
 }
 
 type Root struct {
-	*glitfs.RepoNode
+	*gritfs.RepoNode
 	Socket string
 }
 
@@ -37,19 +37,19 @@ func (r *Root) OnAdd(ctx context.Context) {
 	ch := r.NewPersistentInode(ctx, &fs.MemSymlink{
 		Data: []byte(r.Socket),
 	}, fs.StableAttr{Mode: fuse.S_IFLNK})
-	r.AddChild(".glit", ch, true)
+	r.AddChild(".grit", ch, true)
 }
 
-func NewCommandServer(cas *glitfs.CAS, repo *git.Repository,
+func NewCommandServer(cas *gritfs.CAS, repo *git.Repository,
 	repoPath string,
 	id plumbing.Hash) (fs.InodeEmbedder, error) {
-	r, err := glitfs.NewRoot(cas, repo, repoPath, id)
+	r, err := gritfs.NewRoot(cas, repo, repoPath, id)
 	if err != nil {
 		return nil, err
 	}
 
 	root := &Root{
-		RepoNode: r.(*glitfs.RepoNode),
+		RepoNode: r.(*gritfs.RepoNode),
 	}
 	commandServer := &CommandServer{
 		root: root,
@@ -207,9 +207,9 @@ func (s *IOServer) Edit(req *EditRequest, rep *EditReply) error {
 	return err
 }
 
-func FindGlitSocket(startDir string) (socket string, topdir string, err error) {
+func FindGritSocket(startDir string) (socket string, topdir string, err error) {
 	for dir := startDir; dir != "/"; dir = filepath.Dir(dir) {
-		p := filepath.Join(dir, ".glit")
+		p := filepath.Join(dir, ".grit")
 		fi, err := os.Stat(p)
 		if fi == nil || fi.Mode()&iofs.ModeType != iofs.ModeSocket {
 			continue
@@ -223,7 +223,7 @@ func FindGlitSocket(startDir string) (socket string, topdir string, err error) {
 		}
 	}
 
-	return "", "", fmt.Errorf("glit socket not found")
+	return "", "", fmt.Errorf("grit socket not found")
 }
 
 func ClientRun(socket string, args []string, dir string) (int, error) {

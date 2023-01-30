@@ -1,4 +1,4 @@
-module github.com/hanwen/glitfs
+module github.com/hanwen/gritfs
 
 go 1.18
 

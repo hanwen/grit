@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package glitfs
+package gritfs
 
 import (
 	"context"
@@ -438,16 +438,16 @@ func (n *RepoNode) Repository() *git.Repository {
 	return n.repo
 }
 
-func IsGlitCommit(c *object.Commit) bool {
+func IsGritCommit(c *object.Commit) bool {
 	idx := strings.LastIndex(c.Message, "\n\n")
 	if idx == -1 {
 		return false
 	}
 
-	return strings.Contains(c.Message[idx:], "\nGlit-Amends: ")
+	return strings.Contains(c.Message[idx:], "\nGrit-Amends: ")
 }
 
-func SetGlitCommit(msg string, h plumbing.Hash) string {
+func SetGritCommit(msg string, h plumbing.Hash) string {
 	footerIdx := strings.LastIndex(msg, "\n\n")
 	var lines []string
 	body := msg
@@ -455,7 +455,7 @@ func SetGlitCommit(msg string, h plumbing.Hash) string {
 		lines = strings.Split(msg[footerIdx+2:], "\n")
 		body = msg[:footerIdx]
 	}
-	newLine := "Glit-Amends: " + h.String()
+	newLine := "Grit-Amends: " + h.String()
 	if h == plumbing.ZeroHash {
 		newLine = ""
 	}
@@ -463,7 +463,7 @@ func SetGlitCommit(msg string, h plumbing.Hash) string {
 
 	var newLines []string
 	for _, line := range lines {
-		if strings.HasPrefix(line, "Glit-Amends: ") {
+		if strings.HasPrefix(line, "Grit-Amends: ") {
 			line = newLine
 			seen = true
 		}
@@ -529,15 +529,15 @@ func (r *RepoNode) ID() (plumbing.Hash, error) {
 
 	if lastTree != treeID {
 		c := *r.commit
-		if IsGlitCommit(r.commit) {
+		if IsGritCommit(r.commit) {
 			// amend commit
 			c.TreeHash = treeID
-			c.Message = SetGlitCommit(r.commit.Message, r.commit.Hash)
+			c.Message = SetGritCommit(r.commit.Message, r.commit.Hash)
 		} else {
 			mySig.When = time.Now()
 			ts := time.Now().Format(time.RFC822Z)
 			c = object.Commit{
-				Message: SetGlitCommit(fmt.Sprintf(
+				Message: SetGritCommit(fmt.Sprintf(
 					`Snapshot originally created %v for tree %v`, ts, treeID), r.commit.Hash),
 				Author:       mySig,
 				Committer:    mySig,
@@ -698,9 +698,9 @@ func (r *RepoNode) addGitTree(ctx context.Context, node *fs.Inode, nodePath stri
 		node.AddChild(e.Name, child, true)
 
 		if e.Mode == filemode.Submodule {
-			child.AddChild(".glit",
+			child.AddChild(".grit",
 				r.NewPersistentInode(ctx,
-					&fs.MemSymlink{Data: []byte(strings.Repeat("../", strings.Count(path, "/")+1) + ".glit")},
+					&fs.MemSymlink{Data: []byte(strings.Repeat("../", strings.Count(path, "/")+1) + ".grit")},
 					fs.StableAttr{Mode: fuse.S_IFLNK}), true)
 		}
 	}
