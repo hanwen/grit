@@ -662,13 +662,13 @@ func (r *RepoNode) newGitBlobNode(ctx context.Context, mode filemode.FileMode, o
 	return r.NewPersistentInode(ctx, bn, fs.StableAttr{Mode: uint32(mode)}), nil
 }
 
-func (r *RepoNode) newGitTreeNode(ctx context.Context, tree *object.Tree, nodePath string) (*fs.Inode, error) {
+func (r *RepoNode) newGitTreeNode(ctx context.Context, tree *object.Tree, nodePath string, todo chan<- *submoduleLoad) (*fs.Inode, error) {
 	treeNode := &TreeNode{
 		root: r,
 	}
 
 	node := r.NewPersistentInode(ctx, treeNode, fs.StableAttr{Mode: fuse.S_IFDIR})
-	return node, r.addGitTree(ctx, node, nodePath, tree)
+	return node, r.addGitTree(ctx, node, nodePath, tree, todo)
 }
 
 func (r *RepoNode) newSubmoduleNode(ctx context.Context, submod *config.Submodule, path string, id plumbing.Hash) (*fs.Inode, error) {
@@ -699,9 +699,19 @@ func (r *RepoNode) newSubmoduleNode(ctx context.Context, submod *config.Submodul
 	return r.NewPersistentInode(ctx, ops, fs.StableAttr{Mode: fuse.S_IFDIR}), nil
 }
 
+type submoduleLoad struct {
+	parent *fs.Inode
+	submod *config.Submodule
+	name   string
+	path   string
+	hash   plumbing.Hash
+	err    error
+}
+
 // addGitTree adds entries under tree to node.
-func (r *RepoNode) addGitTree(ctx context.Context, node *fs.Inode, nodePath string, tree *object.Tree) error {
+func (r *RepoNode) addGitTree(ctx context.Context, node *fs.Inode, nodePath string, tree *object.Tree, todo chan<- *submoduleLoad) error {
 	var mods *config.Modules
+
 	for _, e := range tree.Entries {
 		path := filepath.Join(nodePath, e.Name)
 		var child *fs.Inode
@@ -726,32 +736,55 @@ func (r *RepoNode) addGitTree(ctx context.Context, node *fs.Inode, nodePath stri
 				return fmt.Errorf("submodule %q unknown", path)
 			}
 
-			child, err = r.newSubmoduleNode(ctx, submod, path, e.Hash)
-			if err != nil {
-				log.Printf("submodule %q: %v", path, err)
-				continue
+			todo <- &submoduleLoad{
+				submod: submod,
+				parent: node,
+				name:   e.Name,
+				path:   path,
+				hash:   e.Hash,
 			}
 		} else {
-			child, err = r.newGitNode(ctx, e.Mode, e.Hash, filepath.Join(nodePath, e.Name))
+			child, err = r.newGitNode(ctx, e.Mode, e.Hash, filepath.Join(nodePath, e.Name), todo)
 			if err != nil {
 				return err
 			}
-		}
-
-		node.AddChild(e.Name, child, true)
-
-		if e.Mode == filemode.Submodule {
-			child.AddChild(".grit",
-				r.NewPersistentInode(ctx,
-					&fs.MemSymlink{Data: []byte(strings.Repeat("../", strings.Count(path, "/")+1) + ".grit")},
-					fs.StableAttr{Mode: fuse.S_IFLNK}), true)
+			node.AddChild(e.Name, child, true)
 		}
 	}
-
 	return nil
 }
 
-func (r *RepoNode) newGitNode(ctx context.Context, mode filemode.FileMode, id plumbing.Hash, nodePath string) (*fs.Inode, error) {
+func (r *RepoNode) loadSubmoduleWorker(ctx context.Context, todo <-chan *submoduleLoad) error {
+	var wg sync.WaitGroup
+	var acc []*submoduleLoad
+	for t := range todo {
+		wg.Add(1)
+		acc = append(acc, t)
+		go func(sl *submoduleLoad) {
+			child, err := r.newSubmoduleNode(ctx, sl.submod, sl.path, sl.hash)
+			if err != nil {
+				sl.err = err
+				return
+			}
+			sl.parent.AddChild(sl.name, child, true)
+			child.AddChild(".grit",
+				r.NewPersistentInode(ctx,
+					&fs.MemSymlink{Data: []byte(strings.Repeat("../", strings.Count(sl.path, "/")+1) + ".grit")},
+					fs.StableAttr{Mode: fuse.S_IFLNK}), true)
+			wg.Done()
+		}(t)
+	}
+	wg.Wait()
+
+	for _, t := range acc {
+		if t.err != nil {
+			return t.err
+		}
+	}
+	return nil
+}
+
+func (r *RepoNode) newGitNode(ctx context.Context, mode filemode.FileMode, id plumbing.Hash, nodePath string, todo chan<- *submoduleLoad) (*fs.Inode, error) {
 	obj, err := r.repo.Object(plumbing.AnyObject, id)
 	if err != nil {
 		return nil, err
@@ -759,7 +792,7 @@ func (r *RepoNode) newGitNode(ctx context.Context, mode filemode.FileMode, id pl
 
 	switch o := obj.(type) {
 	case *object.Tree:
-		return r.newGitTreeNode(ctx, o, nodePath)
+		return r.newGitTreeNode(ctx, o, nodePath, todo)
 	case *object.Blob:
 		return r.newGitBlobNode(ctx, mode, o)
 	default:
@@ -775,7 +808,17 @@ func (r *RepoNode) OnAdd(ctx context.Context) {
 	if err != nil {
 		log.Fatalf("TreeObject %s: %v", c.TreeHash, err)
 	}
-	if err := r.addGitTree(ctx, &r.Inode, "", tree); err != nil {
-		log.Fatalf("addGitTree: %v", err)
+
+	submoduleLoads := make(chan *submoduleLoad, 5)
+	go func() {
+		err := r.addGitTree(ctx, &r.Inode, "", tree, submoduleLoads)
+		close(submoduleLoads)
+		if err != nil {
+			log.Fatalf("addGitTree: %v", err)
+		}
+	}()
+
+	if err := r.loadSubmoduleWorker(ctx, submoduleLoads); err != nil {
+		log.Fatalf("load submodules: %v", err)
 	}
 }
