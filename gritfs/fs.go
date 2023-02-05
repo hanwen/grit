@@ -671,18 +671,7 @@ func (r *RepoNode) newGitTreeNode(ctx context.Context, tree *object.Tree, nodePa
 	return node, r.addGitTree(ctx, node, nodePath, tree)
 }
 
-func (r *RepoNode) newSubmoduleNode(ctx context.Context, mods *config.Modules, path string, id plumbing.Hash) (*fs.Inode, error) {
-	var submod *config.Submodule
-	for _, m := range mods.Submodules {
-		if m.Path == path {
-			submod = m
-			break
-		}
-	}
-	if submod == nil {
-		return nil, fmt.Errorf("submodule %q unknown", path)
-	}
-
+func (r *RepoNode) newSubmoduleNode(ctx context.Context, submod *config.Submodule, path string, id plumbing.Hash) (*fs.Inode, error) {
 	repoPath := filepath.Join(r.repoPath, "modules", submod.Name)
 	subRepo, err := git.PlainOpen(repoPath)
 	if err != nil {
@@ -725,7 +714,19 @@ func (r *RepoNode) addGitTree(ctx context.Context, node *fs.Inode, nodePath stri
 					continue
 				}
 			}
-			child, err = r.newSubmoduleNode(ctx, mods, path, e.Hash)
+
+			var submod *config.Submodule
+			for _, m := range mods.Submodules {
+				if m.Path == path {
+					submod = m
+					break
+				}
+			}
+			if submod == nil {
+				return fmt.Errorf("submodule %q unknown", path)
+			}
+
+			child, err = r.newSubmoduleNode(ctx, submod, path, e.Hash)
 			if err != nil {
 				log.Printf("submodule %q: %v", path, err)
 				continue
