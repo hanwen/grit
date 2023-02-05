@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/rpc"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,8 +43,8 @@ func (r *Root) OnAdd(ctx context.Context) {
 
 func NewCommandServer(cas *gritfs.CAS, repo *git.Repository,
 	repoPath string,
-	id plumbing.Hash) (fs.InodeEmbedder, error) {
-	r, err := gritfs.NewRoot(cas, repo, repoPath, id)
+	id plumbing.Hash, repoURL *url.URL) (fs.InodeEmbedder, error) {
+	r, err := gritfs.NewRoot(cas, repo, repoPath, id, repoURL)
 	if err != nil {
 		return nil, err
 	}

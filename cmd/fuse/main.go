@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 
@@ -17,6 +18,7 @@ import (
 
 func main() {
 	repoPath := flag.String("repo", "", "")
+	originURL := flag.String("url", "", "URL for the repo")
 	casDir := flag.String("cas", filepath.Join(os.Getenv("HOME"), ".cache", "gritfs2"), "")
 
 	id := flag.String("id", "", "")
@@ -41,7 +43,13 @@ func main() {
 	if err != nil {
 		log.Fatal("NewCAS", err)
 	}
-	root, err := server.NewCommandServer(cas, repo, *repoPath, h)
+
+	repoURL, err := url.Parse(*originURL)
+	if err != nil {
+		log.Fatal("Parse(%q): %v", *originURL, err)
+	}
+
+	root, err := server.NewCommandServer(cas, repo, *repoPath, h, repoURL)
 	if err != nil {
 		log.Fatal("NewRoot", err)
 	}

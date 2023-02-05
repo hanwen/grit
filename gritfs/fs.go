@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net/url"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -428,6 +429,7 @@ type RepoNode struct {
 	cas      *CAS
 	id       plumbing.Hash
 	repoPath string
+	repoURL  *url.URL
 
 	commit *object.Commit
 }
@@ -581,10 +583,41 @@ func (r *RepoNode) modules() (*config.Modules, error) {
 	return mods, nil
 }
 
+func maybeFetchCommit(repo *git.Repository, id plumbing.Hash, repoURL *url.URL) (*object.Commit, error) {
+	commit, err := repo.CommitObject(id)
+	if commit != nil {
+		return commit, nil
+	}
+
+	if err == plumbing.ErrObjectNotFound {
+		if _, err := repo.Remote("grit-origin"); err == git.ErrRemoteNotFound {
+			_, err := repo.CreateRemote(&config.RemoteConfig{
+				Name: "grit-origin",
+				URLs: []string{repoURL.String()},
+			})
+			if err != nil {
+				return nil, err
+			}
+		}
+		opt := git.FetchOptions{
+			RemoteName: "grit-origin",
+			Depth:      1,
+			Progress:   os.Stderr,
+			Tags:       git.NoTags,
+			RefSpecs:   []config.RefSpec{config.RefSpec(fmt.Sprintf("+%s:refs/fetch", id))},
+		}
+		if err = repo.Fetch(&opt); err != nil {
+			return nil, err
+		}
+	}
+	return repo.CommitObject(id)
+}
+
 func NewRoot(cas *CAS, repo *git.Repository,
 	repoPath string,
-	id plumbing.Hash) (fs.InodeEmbedder, error) {
-	commit, err := repo.CommitObject(id)
+	id plumbing.Hash, repoURL *url.URL) (fs.InodeEmbedder, error) {
+
+	commit, err := maybeFetchCommit(repo, id, repoURL)
 	if err != nil {
 		return nil, fmt.Errorf("CommitObject(%v): %v", id, err)
 	}
@@ -592,11 +625,13 @@ func NewRoot(cas *CAS, repo *git.Repository,
 	if err != nil {
 		return nil, err
 	}
+
 	root := &RepoNode{
 		repo:     repo,
 		cas:      cas,
 		id:       id,
 		repoPath: repoPath,
+		repoURL:  repoURL,
 		commit:   commit,
 	}
 	root.root = root
@@ -651,16 +686,23 @@ func (r *RepoNode) newSubmoduleNode(ctx context.Context, mods *config.Modules, p
 	repoPath := filepath.Join(r.repoPath, "modules", submod.Name)
 	subRepo, err := git.PlainOpen(repoPath)
 	if err != nil {
-		// WTF - this varies across git versions?!
-		log.Printf("can't find %s", repoPath)
 		repoPath = filepath.Join(r.repoPath, "modules", strings.Replace(submod.Name, "/", "%2f", -1))
 		subRepo, err = git.PlainOpen(repoPath)
 	}
+	if err == git.ErrRepositoryNotExists {
+		subRepo, err = git.PlainInit(repoPath, true)
+	}
 	if err != nil {
-		log.Printf("can't find %s", repoPath)
+		log.Printf("opening/creating %q: %v", repoPath, err)
 		return nil, err
 	}
-	ops, err := NewRoot(r.cas, subRepo, repoPath, id)
+
+	subURL, err := r.repoURL.Parse(submod.URL)
+	if err != nil {
+		return nil, err
+	}
+
+	ops, err := NewRoot(r.cas, subRepo, repoPath, id, subURL)
 	if err != nil {
 		return nil, err
 	}
