@@ -590,15 +590,11 @@ func maybeFetchCommit(repo *git.Repository, id plumbing.Hash, repoURL *url.URL) 
 	}
 
 	if err == plumbing.ErrObjectNotFound {
-		if _, err := repo.Remote("grit-origin"); err == git.ErrRemoteNotFound {
-			_, err := repo.CreateRemote(&config.RemoteConfig{
-				Name: "grit-origin",
-				URLs: []string{repoURL.String()},
-			})
-			if err != nil {
-				return nil, err
-			}
+		cfg := &config.RemoteConfig{
+			Name: "grit-origin",
+			URLs: []string{repoURL.String()},
 		}
+		rm := git.NewRemote(repo.Storer, cfg)
 		opt := git.FetchOptions{
 			RemoteName: "grit-origin",
 			Depth:      1,
@@ -606,7 +602,7 @@ func maybeFetchCommit(repo *git.Repository, id plumbing.Hash, repoURL *url.URL) 
 			Tags:       git.NoTags,
 			RefSpecs:   []config.RefSpec{config.RefSpec(fmt.Sprintf("+%s:refs/fetch", id))},
 		}
-		if err = repo.Fetch(&opt); err != nil {
+		if err = rm.Fetch(&opt); err != nil {
 			return nil, err
 		}
 	}
