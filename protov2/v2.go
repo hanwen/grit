@@ -91,7 +91,6 @@ func newScanner(r io.Reader) *scanner {
 
 var flushPacket = []byte("0000")
 var delimiterPacket = []byte("0001")
-var errShortRead = fmt.Errorf("short read")
 
 var ErrUnsupported = fmt.Errorf("unsupported")
 
@@ -104,10 +103,8 @@ func packetString(b []byte) string {
 }
 
 func (s *scanner) readLine() (packet []byte, magic bool, err error) {
-	if n, err := s.r.Read(s.buf[:4]); err != nil {
+	if _, err := io.ReadFull(s.r, s.buf[:4]); err != nil {
 		return nil, false, err
-	} else if n != 4 {
-		return nil, false, errShortRead
 	}
 
 	if string(s.buf[:4]) == "0000" {
@@ -126,10 +123,8 @@ func (s *scanner) readLine() (packet []byte, magic bool, err error) {
 	if cap(s.buf) < int(len) {
 		s.buf = make([]byte, len)
 	}
-	if n, err := s.r.Read(s.buf[:len]); err != nil {
+	if _, err := io.ReadFull(s.r, s.buf[:len]); err != nil {
 		return nil, false, err
-	} else if n != int(len) {
-		return nil, false, errShortRead
 	}
 	return s.buf[:len], false, nil
 }
@@ -351,19 +346,24 @@ func (r *FetchRequest) Encode(w io.Writer) error {
 }
 
 type FetchOptions struct {
-	Sideband io.Writer
+	Progress io.Writer
+	Want     []plumbing.Hash
+	Depth    int
+	Filter   string
 }
 
-func (cl *Client) Fetch(storer storage.Storer, ids []plumbing.Hash, opts *FetchOptions) error {
-	one := 1
+func (cl *Client) Fetch(storer storage.Storer, opts *FetchOptions) error {
 	fetchReq := &FetchRequest{
 		Done:   true,
-		Want:   ids,
-		Deepen: &one,
+		Want:   opts.Want,
+		Filter: opts.Filter,
+	}
+	if opts.Depth > 0 {
+		fetchReq.Deepen = &opts.Depth
 	}
 
-	if opts.Sideband == nil {
-		opts.Sideband = io.Discard
+	if opts.Progress == nil {
+		opts.Progress = io.Discard
 	}
 	req, err := cl.NewRequest(fetchReq)
 	if err != nil {
@@ -417,7 +417,7 @@ responseLoop:
 				case 1:
 					pack.Write(p)
 				case 2:
-					opts.Sideband.Write(p)
+					opts.Progress.Write(p)
 				case 3:
 					errorBuf.Write(p)
 				default:
@@ -434,6 +434,5 @@ responseLoop:
 	if errorBuf.Len() > 0 {
 		return errors.New(errorBuf.String())
 	}
-
 	return packfile.UpdateObjectStorage(storer, pack)
 }
