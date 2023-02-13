@@ -779,6 +779,7 @@ func (r *RepoNode) loadSubmoduleWorker(ctx context.Context, todo <-chan *submodu
 		wg.Add(1)
 		acc = append(acc, t)
 		go func(sl *submoduleLoad) {
+			defer wg.Done()
 			child, err := r.newSubmoduleNode(ctx, sl.submod, sl.path, sl.hash)
 			if err != nil {
 				sl.err = err
@@ -789,7 +790,6 @@ func (r *RepoNode) loadSubmoduleWorker(ctx context.Context, todo <-chan *submodu
 				r.NewPersistentInode(ctx,
 					&fs.MemSymlink{Data: []byte(strings.Repeat("../", strings.Count(sl.path, "/")+1) + ".grit")},
 					fs.StableAttr{Mode: fuse.S_IFLNK}), true)
-			wg.Done()
 		}(t)
 	}
 	wg.Wait()
