@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -139,16 +140,17 @@ type Client struct {
 
 func NewClient(u string) (*Client, error) {
 	suffix := "/info/refs?service=git-upload-pack"
-	req, err := http.NewRequest("GET", u+suffix, nil)
+	finalURL := u + suffix
+	req, err := http.NewRequest("GET", finalURL, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	req.Header.Add("Git-Protocol", "version=2")
 
-	finalURL := u
 	client := http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			log.Printf("redirect to %s", req.URL)
 			finalURL = req.URL.String()
 			return nil
 		},
@@ -159,23 +161,23 @@ func NewClient(u string) (*Client, error) {
 	}
 	defer rep.Body.Close()
 	s := newScanner(rep.Body)
-	line, _, err := s.readLine()
+	packet, magic, err := s.readLine()
 	if err != nil {
 		return nil, err
 	}
-	if packetString(line) != "# service=git-upload-pack" {
-		return nil, fmt.Errorf("missing service line: %q", line)
+	if packetString(packet) == "# service=git-upload-pack" {
+		if packet, magic, err = s.readLine(); err != nil {
+			return nil, err
+		} else if !magic || !bytes.Equal(packet, flushPacket) {
+			return nil, fmt.Errorf("want flush, got %q", packet)
+		}
+
+		if packet, _, err = s.readLine(); err != nil {
+			return nil, err
+		}
 	}
 
-	if packet, magic, err := s.readLine(); err != nil {
-		return nil, err
-	} else if !magic || !bytes.Equal(packet, flushPacket) {
-		return nil, fmt.Errorf("want flush, got %q", packet)
-	}
-
-	if packet, _, err := s.readLine(); err != nil {
-		return nil, err
-	} else if packetString(packet) != "version 2" {
+	if packetString(packet) != "version 2" {
 		return nil, fmt.Errorf("version 2 not supported: %s", packet)
 	}
 
@@ -249,7 +251,6 @@ func (cl *Client) ObjectInfo(ids []plumbing.Hash) (map[plumbing.Hash]uint64, err
 	if _, ok := cl.capabilities["object-info"]; !ok {
 		return nil, ErrUnsupported
 	}
-
 	oiReq := &ObjectInfoRequest{
 		Want: "size",
 		OID:  ids,
@@ -323,6 +324,7 @@ func (r *FetchRequest) Encode(w io.Writer) error {
 	}
 
 	for k, v := range map[string]bool{
+		"done":            r.Done,
 		"thin-pack":       r.ThinPack,
 		"no-progress":     r.NoProgress,
 		"include-tag":     r.IncludeTag,
