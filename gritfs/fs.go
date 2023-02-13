@@ -5,6 +5,8 @@
 package gritfs
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -15,6 +17,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -453,6 +456,50 @@ type RepoNode struct {
 	commit *object.Commit
 }
 
+func saveSizes(filename string, sizes map[plumbing.Hash]uint64) error {
+	buf := &bytes.Buffer{}
+	for k, v := range sizes {
+		fmt.Fprintf(buf, "%v %012d\n", k, v)
+	}
+
+	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(buf.Bytes()); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func readSizes(filename string) (map[plumbing.Hash]uint64, error) {
+	f, err := os.Open(filename)
+	if os.IsNotExist(err) {
+		return map[plumbing.Hash]uint64{}, nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	s := bufio.NewScanner(f)
+	s.Split(bufio.ScanLines)
+
+	result := map[plumbing.Hash]uint64{}
+	for s.Scan() {
+		str := s.Text()
+		h := plumbing.NewHash(str[:40])
+		sz, err := strconv.ParseUint(str[41:], 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		result[h] = sz
+	}
+
+	return result, nil
+}
+
 var _ = (Node)((*RepoNode)(nil))
 
 func (n *RepoNode) Repository() *git.Repository {
@@ -854,20 +901,38 @@ func (r *RepoNode) onAdd(ctx context.Context) error {
 	}
 
 	if len(unknownBlobs) > 0 {
-		var keys []plumbing.Hash
-		for k := range unknownBlobs {
-			keys = append(keys, k)
-		}
-		log.Printf("Fetching %d sizes for %s", len(keys), r.repoURL)
-		sizes, err := r.gitClient.ObjectInfo(keys)
+		fn := filepath.Join(r.repoPath, "blob-sizes.txt")
+		sizes, err := readSizes(fn)
 		if err != nil {
 			return err
 		}
 
-		for id, sz := range sizes {
-			for _, n := range unknownBlobs[id] {
-				n.size = sz
+		var keys []plumbing.Hash
+		for k, v := range unknownBlobs {
+			sz, ok := sizes[k]
+			if ok {
+				for _, n := range v {
+					n.size = sz
+				}
+			} else {
+				keys = append(keys, k)
 			}
+		}
+
+		if len(keys) > 0 {
+			log.Printf("Fetching %d sizes for %s", len(keys), r.repoURL)
+			newSizes, err := r.gitClient.ObjectInfo(keys)
+			if err != nil {
+				return err
+			}
+
+			for id, sz := range newSizes {
+				for _, n := range unknownBlobs[id] {
+					n.size = sz
+				}
+			}
+
+			saveSizes(fn, newSizes)
 		}
 	}
 	return nil
