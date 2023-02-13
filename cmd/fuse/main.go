@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log"
 	"net/url"
 	"os"
@@ -21,7 +20,7 @@ func main() {
 	repoPath := flag.String("repo", "", "")
 	originURL := flag.String("url", "", "URL for the repo")
 	casDir := flag.String("cas", filepath.Join(os.Getenv("HOME"), ".cache", "gritfs2"), "")
-
+	debug := flag.Bool("debug", false, "FUSE debug")
 	id := flag.String("id", "", "")
 	flag.Parse()
 	if len(flag.Args()) != 1 {
@@ -52,7 +51,7 @@ func main() {
 	}
 	repoURL, err := url.Parse(*originURL)
 	if err != nil {
-		log.Fatal("Parse(%q): %v", *originURL, err)
+		log.Fatalf("Parse(%q): %v", *originURL, err)
 	}
 
 	root, err := server.NewCommandServer(cas, repo, *repoPath, h, repoURL)
@@ -61,14 +60,15 @@ func main() {
 	}
 
 	// Mount the file system
+	log.Println("Mounting...")
 	server, err := fusefs.Mount(mntDir, root, &fusefs.Options{
-		MountOptions: fuse.MountOptions{Debug: true},
+		MountOptions: fuse.MountOptions{Debug: *debug},
 	})
 	if err != nil {
 		log.Fatal("Mount", err)
 	}
 
-	fmt.Printf("Mounted git on %s\n", mntDir)
+	log.Printf("Mounted git on %s\n", mntDir)
 	// Serve the file system, until unmounted by calling fusermount -u
 	server.Wait()
 }
