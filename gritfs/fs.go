@@ -158,6 +158,12 @@ func (n *BlobNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrO
 	return 0
 }
 
+var _ = (fs.NodeReadlinker)((*BlobNode)(nil))
+
+func (n *BlobNode) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
+	return n.linkTarget, 0
+}
+
 type fileAllOps interface {
 	Release(ctx context.Context) syscall.Errno
 	Getattr(ctx context.Context, out *fuse.AttrOut) syscall.Errno
