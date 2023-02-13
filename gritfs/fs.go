@@ -27,6 +27,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	"github.com/hanwen/gritfs/protov2"
 )
 
 type BlobNode struct {
@@ -119,6 +120,17 @@ func (n *BlobNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAtt
 // expandBlob reads the blob from Git and saves into CAS.
 func (n *BlobNode) expandBlob() error {
 	obj, err := n.root.repo.BlobObject(n.id)
+	if err == plumbing.ErrObjectNotFound {
+		opts := &protov2.FetchOptions{
+			Progress: os.Stderr,
+			Want:     []plumbing.Hash{n.id},
+		}
+		if err := n.root.gitClient.Fetch(n.root.repo.Storer, opts); err != nil {
+			return err
+		}
+
+		obj, err = n.root.repo.BlobObject(n.id)
+	}
 	if err != nil {
 		return err
 	}
@@ -425,11 +437,12 @@ func (n *TreeNode) Create(ctx context.Context, name string, flags uint32, mode u
 type RepoNode struct {
 	TreeNode
 
-	repo     *git.Repository
-	cas      *CAS
-	id       plumbing.Hash
-	repoPath string
-	repoURL  *url.URL
+	repo      *git.Repository
+	cas       *CAS
+	id        plumbing.Hash
+	repoPath  string
+	repoURL   *url.URL
+	gitClient *protov2.Client
 
 	commit *object.Commit
 }
@@ -583,66 +596,70 @@ func (r *RepoNode) modules() (*config.Modules, error) {
 	return mods, nil
 }
 
-func maybeFetchCommit(repo *git.Repository, id plumbing.Hash, repoURL *url.URL) (*object.Commit, error) {
-	commit, err := repo.CommitObject(id)
-	if commit != nil {
-		return commit, nil
+func (n *RepoNode) maybeFetchCommit(id plumbing.Hash) (*object.Commit, error) {
+	commit, err := n.repo.CommitObject(id)
+	if err == nil {
+		return commit, err
 	}
 
-	if err == plumbing.ErrObjectNotFound {
-		cfg := &config.RemoteConfig{
-			Name: "grit-origin",
-			URLs: []string{repoURL.String()},
-		}
-		rm := git.NewRemote(repo.Storer, cfg)
-		opt := git.FetchOptions{
-			RemoteName: "grit-origin",
-			Depth:      1,
-			Progress:   os.Stderr,
-			Tags:       git.NoTags,
-			RefSpecs:   []config.RefSpec{config.RefSpec(fmt.Sprintf("+%s:refs/fetch", id))},
-		}
-		if err = rm.Fetch(&opt); err != nil {
-			return nil, err
-		}
+	if err != plumbing.ErrObjectNotFound {
+		return nil, err
 	}
-	return repo.CommitObject(id)
+
+	opts := &protov2.FetchOptions{
+		Progress: os.Stderr,
+		Depth:    1,
+		Filter:   "blob:limit=10240",
+		Want:     []plumbing.Hash{id},
+	}
+
+	if err = n.gitClient.Fetch(n.repo.Storer, opts); err != nil {
+		return nil, err
+	}
+
+	return n.repo.CommitObject(id)
 }
 
 func NewRoot(cas *CAS, repo *git.Repository,
 	repoPath string,
 	id plumbing.Hash, repoURL *url.URL) (fs.InodeEmbedder, error) {
 
-	commit, err := maybeFetchCommit(repo, id, repoURL)
+	repoPath, err := filepath.Abs(repoPath)
 	if err != nil {
-		return nil, fmt.Errorf("CommitObject(%v): %v", id, err)
+		return nil, err
 	}
-	repoPath, err = filepath.Abs(repoPath)
+	cl, err := protov2.NewClient(repoURL.String())
 	if err != nil {
 		return nil, err
 	}
 
 	root := &RepoNode{
-		repo:     repo,
-		cas:      cas,
-		id:       id,
-		repoPath: repoPath,
-		repoURL:  repoURL,
-		commit:   commit,
+		repo:      repo,
+		cas:       cas,
+		id:        id,
+		repoPath:  repoPath,
+		repoURL:   repoURL,
+		gitClient: cl,
 	}
 	root.root = root
-
 	return root, nil
 }
 
-func (r *RepoNode) newGitBlobNode(ctx context.Context, mode filemode.FileMode, obj *object.Blob) (*fs.Inode, error) {
+func (r *RepoNode) newGitBlobNode(ctx context.Context, mode filemode.FileMode, id plumbing.Hash, unknownBlobs map[plumbing.Hash][]*BlobNode) (*fs.Inode, error) {
 	bn := &BlobNode{
 		root: r,
-		id:   obj.ID(),
+		id:   id,
 		mode: mode,
-		size: uint64(obj.Size),
 	}
+	obj, err := r.repo.BlobObject(id)
+	if err == plumbing.ErrObjectNotFound {
+		unknownBlobs[id] = append(unknownBlobs[id], bn)
+	} else {
+		bn.size = uint64(obj.Size)
+	}
+
 	if mode == filemode.Symlink {
+		// Assuming blob filter will always load short files.
 		rc, err := obj.Reader()
 		if err != nil {
 			return nil, err
@@ -658,13 +675,18 @@ func (r *RepoNode) newGitBlobNode(ctx context.Context, mode filemode.FileMode, o
 	return r.NewPersistentInode(ctx, bn, fs.StableAttr{Mode: uint32(mode)}), nil
 }
 
-func (r *RepoNode) newGitTreeNode(ctx context.Context, tree *object.Tree, nodePath string, todo chan<- *submoduleLoad) (*fs.Inode, error) {
+func (r *RepoNode) newGitTreeNode(ctx context.Context, id plumbing.Hash, nodePath string, todo chan<- *submoduleLoad, unknownBlobs map[plumbing.Hash][]*BlobNode) (*fs.Inode, error) {
+	tree, err := r.repo.TreeObject(id)
+	if err != nil {
+		return nil, err
+	}
+
 	treeNode := &TreeNode{
 		root: r,
 	}
 
 	node := r.NewPersistentInode(ctx, treeNode, fs.StableAttr{Mode: fuse.S_IFDIR})
-	return node, r.addGitTree(ctx, node, nodePath, tree, todo)
+	return node, r.addGitTree(ctx, node, nodePath, tree, todo, unknownBlobs)
 }
 
 func (r *RepoNode) newSubmoduleNode(ctx context.Context, submod *config.Submodule, path string, id plumbing.Hash) (*fs.Inode, error) {
@@ -705,7 +727,7 @@ type submoduleLoad struct {
 }
 
 // addGitTree adds entries under tree to node.
-func (r *RepoNode) addGitTree(ctx context.Context, node *fs.Inode, nodePath string, tree *object.Tree, todo chan<- *submoduleLoad) error {
+func (r *RepoNode) addGitTree(ctx context.Context, node *fs.Inode, nodePath string, tree *object.Tree, todo chan<- *submoduleLoad, unknownBlobs map[plumbing.Hash][]*BlobNode) error {
 	var mods *config.Modules
 
 	for _, e := range tree.Entries {
@@ -740,7 +762,7 @@ func (r *RepoNode) addGitTree(ctx context.Context, node *fs.Inode, nodePath stri
 				hash:   e.Hash,
 			}
 		} else {
-			child, err = r.newGitNode(ctx, e.Mode, e.Hash, filepath.Join(nodePath, e.Name), todo)
+			child, err = r.newGitNode(ctx, e.Mode, e.Hash, filepath.Join(nodePath, e.Name), todo, unknownBlobs)
 			if err != nil {
 				return err
 			}
@@ -780,25 +802,31 @@ func (r *RepoNode) loadSubmoduleWorker(ctx context.Context, todo <-chan *submodu
 	return nil
 }
 
-func (r *RepoNode) newGitNode(ctx context.Context, mode filemode.FileMode, id plumbing.Hash, nodePath string, todo chan<- *submoduleLoad) (*fs.Inode, error) {
-	obj, err := r.repo.Object(plumbing.AnyObject, id)
-	if err != nil {
-		return nil, err
-	}
-
-	switch o := obj.(type) {
-	case *object.Tree:
-		return r.newGitTreeNode(ctx, o, nodePath, todo)
-	case *object.Blob:
-		return r.newGitBlobNode(ctx, mode, o)
+func (r *RepoNode) newGitNode(ctx context.Context, mode filemode.FileMode, id plumbing.Hash, nodePath string, todo chan<- *submoduleLoad, unknownBlobs map[plumbing.Hash][]*BlobNode) (*fs.Inode, error) {
+	switch mode {
+	case filemode.Dir:
+		return r.newGitTreeNode(ctx, id, nodePath, todo, unknownBlobs)
+	case filemode.Executable, filemode.Regular, filemode.Symlink:
+		return r.newGitBlobNode(ctx, mode, id, unknownBlobs)
 	default:
-		return nil, fmt.Errorf("unsupported")
+		return nil, fmt.Errorf("unsupported mode %v %q", mode, nodePath)
 	}
 }
 
 var _ = (fs.NodeOnAdder)((*RepoNode)(nil))
 
 func (r *RepoNode) OnAdd(ctx context.Context) {
+	if err := r.onAdd(ctx); err != nil {
+		log.Printf("OnAdd: %v", err)
+	}
+}
+
+func (r *RepoNode) onAdd(ctx context.Context) error {
+	commit, err := r.root.maybeFetchCommit(r.id)
+	if err != nil {
+		return fmt.Errorf("CommitObject(%v): %v", r.id, err)
+	}
+	r.commit = commit
 	c := r.commit
 	tree, err := r.repo.TreeObject(c.TreeHash)
 	if err != nil {
@@ -806,8 +834,9 @@ func (r *RepoNode) OnAdd(ctx context.Context) {
 	}
 
 	submoduleLoads := make(chan *submoduleLoad, 5)
+	unknownBlobs := map[plumbing.Hash][]*BlobNode{}
 	go func() {
-		err := r.addGitTree(ctx, &r.Inode, "", tree, submoduleLoads)
+		err := r.addGitTree(ctx, &r.Inode, "", tree, submoduleLoads, unknownBlobs)
 		close(submoduleLoads)
 		if err != nil {
 			log.Fatalf("addGitTree: %v", err)
@@ -815,6 +844,25 @@ func (r *RepoNode) OnAdd(ctx context.Context) {
 	}()
 
 	if err := r.loadSubmoduleWorker(ctx, submoduleLoads); err != nil {
-		log.Fatalf("load submodules: %v", err)
+		return err
 	}
+
+	if len(unknownBlobs) > 0 {
+		var keys []plumbing.Hash
+		for k := range unknownBlobs {
+			keys = append(keys, k)
+		}
+		log.Printf("Fetching %d sizes for %s", len(keys), r.repoURL)
+		sizes, err := r.gitClient.ObjectInfo(keys)
+		if err != nil {
+			return err
+		}
+
+		for id, sz := range sizes {
+			for _, n := range unknownBlobs[id] {
+				n.size = sz
+			}
+		}
+	}
+	return nil
 }
