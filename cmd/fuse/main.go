@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -44,6 +45,11 @@ func main() {
 		log.Fatal("NewCAS", err)
 	}
 
+	// submodule URLs are relative; resolution goes wrong if it
+	// doesn't end in '/'.
+	if !strings.HasSuffix(*originURL, "/") {
+		*originURL += "/"
+	}
 	repoURL, err := url.Parse(*originURL)
 	if err != nil {
 		log.Fatal("Parse(%q): %v", *originURL, err)
