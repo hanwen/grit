@@ -18,6 +18,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/hanwen/go-fuse/v2/fs"
+	"github.com/hanwen/go-fuse/v2/fuse"
 	"github.com/hanwen/gritfs/gritfs"
 )
 
@@ -366,11 +367,66 @@ func LsTreeCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (
 	return 0, nil
 }
 
+func find(root *fs.Inode, dir string, nameFilter, typeFilter string, ioc *IOClient) error {
+	for k, v := range root.Children() {
+		match := true
+		if nameFilter != "" {
+			ok, err := filepath.Match(nameFilter, k)
+			if err == nil && !ok {
+				match = false
+			}
+		}
+
+		if typeFilter == "d" && !v.IsDir() {
+			match = false
+		} else if typeFilter == "f" && v.Mode() != fuse.S_IFREG {
+			match = false
+		}
+
+		if match {
+			ioc.Println("%s", filepath.Join(dir, k))
+		}
+
+		if v.IsDir() {
+			if err := find(v, filepath.Join(dir, k), nameFilter, typeFilter, ioc); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func FindCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
+	flagSet := flag.NewFlagSet("find", flag.ContinueOnError)
+	nameFilter := flagSet.String("name", "", "name glob")
+	typeFilter := flagSet.String("type", "", "filter to type")
+	flagSet.SetOutput(ioc)
+	flagSet.Usage = usage(flagSet)
+	if err := flagSet.Parse(args); err != nil {
+		return 2, nil // Parse already prints diagnostics.
+	}
+
+	inode := root.(fs.InodeEmbedder).EmbeddedInode()
+	current, err := walkPath(inode, dir)
+	if err != nil {
+		ioc.Println("%s", err)
+		return 1, nil
+	}
+	if err := find(current, "", *nameFilter, *typeFilter, ioc); err != nil {
+		ioc.Println("lstree: %v", err)
+		return 1, nil
+	}
+
+	return 0, nil
+
+}
+
 var dispatch = map[string]func([]string, string, *IOClient, gritfs.Node) (int, error){
 	"log":     LogCommand,
 	"amend":   AmendCommand,
 	"ls-tree": LsTreeCommand,
 	"commit":  CommitCommand,
+	"find":    FindCommand,
 }
 
 func Usage(ioc *IOClient) (int, error) {
