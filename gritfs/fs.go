@@ -666,6 +666,10 @@ func (n *RepoNode) maybeFetchCommit(id plumbing.Hash) (*object.Commit, error) {
 		Want:     []plumbing.Hash{id},
 	}
 
+	if !n.gitClient.HasCap("object-size") {
+		opts.Filter = ""
+	}
+
 	if err = n.gitClient.Fetch(n.repo.Storer, opts); err != nil {
 		return nil, err
 	}

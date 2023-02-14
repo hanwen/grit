@@ -138,6 +138,11 @@ type Client struct {
 	lsRefsCaps   map[string]struct{}
 }
 
+func (cl *Client) HasCap(cap string) bool {
+	_, ok := cl.capabilities[cap]
+	return ok
+}
+
 func NewClient(u string) (*Client, error) {
 	suffix := "/info/refs?service=git-upload-pack"
 	finalURL := u + suffix
