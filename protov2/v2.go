@@ -93,7 +93,7 @@ func newScanner(r io.Reader) *scanner {
 var flushPacket = []byte("0000")
 var delimiterPacket = []byte("0001")
 
-var ErrUnsupported = fmt.Errorf("unsupported")
+var ErrUnsupported = fmt.Errorf("unsupported git operation")
 
 func packetString(b []byte) string {
 	l := len(b)
@@ -178,7 +178,7 @@ func NewClient(u string) (*Client, error) {
 	}
 
 	if packetString(packet) != "version 2" {
-		return nil, fmt.Errorf("version 2 not supported: %s", packet)
+		return nil, fmt.Errorf("version 2 not supported for %s: %s", u, packet)
 	}
 
 	if !strings.HasSuffix(finalURL, suffix) {
