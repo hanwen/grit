@@ -63,6 +63,8 @@ func main() {
 	log.Println("Mounting...")
 	server, err := fusefs.Mount(mntDir, root, &fusefs.Options{
 		MountOptions: fuse.MountOptions{Debug: *debug},
+		UID:          uint32(os.Getuid()),
+		GID:          uint32(os.Getgid()),
 	})
 	if err != nil {
 		log.Fatal("Mount", err)
