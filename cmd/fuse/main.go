@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/go-git/go-git/v5"
+	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	fusefs "github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
@@ -27,6 +27,10 @@ func main() {
 		log.Fatal("usage")
 	}
 	mntDir := flag.Arg(0)
+
+	if *originURL == "" {
+		log.Fatal("must specify -url")
+	}
 
 	if fi, err := os.Stat(filepath.Join(*repoPath, ".git")); err == nil && fi.IsDir() {
 		*repoPath = filepath.Join(*repoPath, ".git")
