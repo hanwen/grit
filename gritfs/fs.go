@@ -710,7 +710,7 @@ func (n *RepoNode) maybeFetchCommit(id plumbing.Hash) (*object.Commit, error) {
 		Want:     []plumbing.Hash{id},
 	}
 
-	if !n.gitClient.HasCap("object-size") {
+	if !n.gitClient.HasCap("object-info") {
 		opts.Filter = ""
 	}
 
@@ -927,7 +927,7 @@ func (r *RepoNode) OnAdd(ctx context.Context) {
 func (r *RepoNode) onAdd(ctx context.Context) error {
 	commit, err := r.root.maybeFetchCommit(r.id)
 	if err != nil {
-		return fmt.Errorf("CommitObject(%v): %v", r.id, err)
+		return fmt.Errorf("maybeFetchCommit(%v): %v", r.id, err)
 	}
 	r.commit = commit
 	c := r.commit
