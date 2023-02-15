@@ -44,6 +44,7 @@ type BlobNode struct {
 	size       uint64
 	id         plumbing.Hash
 	linkTarget []byte
+	modTime    time.Time
 
 	// If opened, filedesc for the open file. Also protected by mu
 	backingFile string
@@ -106,6 +107,10 @@ func (n *BlobNode) setSize(sz uint64) error {
 		return err
 	}
 
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.modTime = time.Now()
+
 	return nil
 }
 
@@ -155,9 +160,10 @@ var _ = (fs.NodeGetattrer)((*BlobNode)(nil))
 func (n *BlobNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+
 	out.Size = n.size
 	out.Mode = uint32(n.mode)
-
+	out.SetTimes(nil, &n.modTime, nil)
 	return 0
 }
 
@@ -218,6 +224,7 @@ func (n *BlobNode) saveToGit() error {
 	defer n.mu.Unlock()
 	n.id = id
 	n.size = uint64(sz)
+	n.modTime = time.Now()
 	log.Println("new hash is", id)
 	return nil
 }
@@ -233,7 +240,7 @@ func (n *BlobNode) Flush(ctx context.Context, fh fs.FileHandle) syscall.Errno {
 	of := fh.(*openBlob)
 	if of.flags&(syscall.O_WRONLY|syscall.O_APPEND|syscall.O_RDWR) != 0 {
 		if err := n.saveToGit(); err != nil {
-			log.Printf("mf.save: %v", err)
+			log.Printf("saveToGit: %v", err)
 			return syscall.EIO
 		}
 	}
@@ -329,6 +336,18 @@ type TreeNode struct {
 	fs.Inode
 
 	root *RepoNode
+
+	mu      sync.Mutex
+	modTime time.Time
+}
+
+func (n *TreeNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	out.Mode = fuse.S_IFDIR
+	out.SetTimes(nil, &n.modTime, nil)
+	return 0
 }
 
 var _ = (Node)((*TreeNode)(nil))
@@ -408,6 +427,24 @@ func (n *TreeNode) ID() (id plumbing.Hash, err error) {
 	return id, err
 }
 
+var _ = (fs.NodeUnlinker)((*TreeNode)(nil))
+
+func (n *TreeNode) Unlink(ctx context.Context, name string) syscall.Errno {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.modTime = time.Now()
+	return 0
+}
+
+var _ = (fs.NodeRmdirer)((*TreeNode)(nil))
+
+func (n *TreeNode) Rmdir(ctx context.Context, name string) syscall.Errno {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.modTime = time.Now()
+	return 0
+}
+
 var _ = (fs.NodeCreater)((*TreeNode)(nil))
 
 func (n *TreeNode) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (node *fs.Inode, fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
@@ -417,8 +454,9 @@ func (n *TreeNode) Create(ctx context.Context, name string, flags uint32, mode u
 		mode = 0644 | fuse.S_IFREG
 	}
 	bn := &BlobNode{
-		root: n.root,
-		mode: filemode.FileMode(mode),
+		root:    n.root,
+		mode:    filemode.FileMode(mode),
+		modTime: time.Now(),
 	}
 
 	if err := bn.materialize(); err != nil {
@@ -438,6 +476,11 @@ func (n *TreeNode) Create(ctx context.Context, name string, flags uint32, mode u
 		fileAllOps: fs.NewLoopbackFile(fd).(fileAllOps),
 		flags:      flags,
 	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.modTime = time.Now()
+
 	return child, fh, 0, 0
 }
 
@@ -446,9 +489,10 @@ func (n *TreeNode) Create(ctx context.Context, name string, flags uint32, mode u
 type RepoNode struct {
 	TreeNode
 
-	repo      *git.Repository
-	cas       *CAS
-	id        plumbing.Hash
+	repo *git.Repository
+	cas  *CAS
+	id   plumbing.Hash
+
 	repoPath  string
 	repoURL   *url.URL
 	gitClient *protov2.Client
@@ -704,9 +748,10 @@ func NewRoot(cas *CAS, repo *git.Repository,
 
 func (r *RepoNode) newGitBlobNode(ctx context.Context, mode filemode.FileMode, id plumbing.Hash, unknownBlobs map[plumbing.Hash][]*BlobNode) (*fs.Inode, error) {
 	bn := &BlobNode{
-		root: r,
-		id:   id,
-		mode: mode,
+		root:    r,
+		id:      id,
+		mode:    mode,
+		modTime: time.Now(),
 	}
 	obj, err := r.repo.BlobObject(id)
 	if err == plumbing.ErrObjectNotFound {
@@ -739,7 +784,8 @@ func (r *RepoNode) newGitTreeNode(ctx context.Context, id plumbing.Hash, nodePat
 	}
 
 	treeNode := &TreeNode{
-		root: r,
+		root:    r,
+		modTime: time.Now(),
 	}
 
 	node := r.NewPersistentInode(ctx, treeNode, fs.StableAttr{Mode: fuse.S_IFDIR})
