@@ -296,13 +296,14 @@ var fileModeNames = map[filemode.FileMode]string{
 	filemode.Submodule:  "commit",
 }
 
+// `dir` is the path leading up to `root`.
 func lsTree(root *fs.Inode, dir string, recursive bool, ioc *IOClient) error {
-	Node, ok := root.Operations().(gritfs.Node)
+	node, ok := root.Operations().(gritfs.Node)
 	if !ok {
 		return fmt.Errorf("path %q is not a Node", root.Path(nil))
 	}
 
-	tree := Node.GetTreeNode()
+	tree := node.GetTreeNode()
 	if tree == nil {
 		return fmt.Errorf("path %q is not a git tree", root.Path(nil))
 	}
@@ -327,6 +328,7 @@ func lsTree(root *fs.Inode, dir string, recursive bool, ioc *IOClient) error {
 func walkPath(root *fs.Inode, path string) (*fs.Inode, error) {
 	var components []string
 	if len(path) > 0 {
+		path = filepath.Clean(path)
 		components = strings.Split(path, "/")
 	}
 
@@ -358,8 +360,18 @@ func LsTreeCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (
 		ioc.Println("%s", err)
 		return 1, nil
 	}
-	args = flagSet.Args()
-	if err := lsTree(current, "", *recursive, ioc); err != nil {
+	arg := ""
+	if len(flagSet.Args()) > 0 {
+		arg = flagSet.Arg(0)
+	}
+
+	current, err = walkPath(current, arg)
+	if err != nil {
+		ioc.Println("%s", err)
+		return 1, nil
+	}
+
+	if err := lsTree(current, arg, *recursive, ioc); err != nil {
 		ioc.Println("lstree: %v", err)
 		return 1, nil
 	}
