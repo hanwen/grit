@@ -191,8 +191,11 @@ func NewClient(u string) (*Client, error) {
 	}
 	finalURL = finalURL[:len(finalURL)-len(suffix)]
 
+	if !strings.HasSuffix(finalURL, "/") {
+		finalURL += "/"
+	}
 	cl := &Client{
-		url:          finalURL + "/git-upload-pack",
+		url:          finalURL + "git-upload-pack",
 		capabilities: map[string]struct{}{},
 		fetchCaps:    map[string]struct{}{},
 		lsRefsCaps:   map[string]struct{}{},
@@ -389,12 +392,15 @@ func (cl *Client) Fetch(storer storage.Storer, opts *FetchOptions) error {
 responseLoop:
 	for {
 		packet, magic, err := sc.readLine()
-		if err != nil {
-			return err
-		}
-
 		if magic {
 			break
+		}
+		if err == io.EOF {
+			err = nil
+			break
+		}
+		if err != nil {
+			return err
 		}
 
 		switch packetString(packet) {
@@ -424,7 +430,7 @@ responseLoop:
 				case 1:
 					pack.Write(p)
 				case 2:
-					opts.Progress.Write(p)
+					fmt.Fprintf(opts.Progress, "%s: %s", cl.url, string(p))
 				case 3:
 					errorBuf.Write(p)
 				default:
