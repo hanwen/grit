@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package server
+package gitutil
 
 import (
 	"fmt"
@@ -16,21 +16,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/storage/memory"
 )
-
-func insertBlob(eos storer.EncodedObjectStorer, content string) (id plumbing.Hash, err error) {
-	enc := eos.NewEncodedObject()
-	enc.SetType(plumbing.BlobObject)
-	w, err := enc.Writer()
-	if err != nil {
-		return id, err
-	}
-
-	w.Write([]byte(content))
-	if err := w.Close(); err != nil {
-		return id, err
-	}
-	return eos.SetEncodedObject(enc)
-}
 
 func dumpTree(t *object.Tree) ([]object.TreeEntry, error) {
 	iter := t.Files()
@@ -81,7 +66,7 @@ func TestPatchTree(t *testing.T) {
 
 	var ids []plumbing.Hash
 	for i := 0; i < 10; i++ {
-		id, err := insertBlob(storer, fmt.Sprintf("%d", i))
+		id, err := SaveBlob(storer, []byte(fmt.Sprintf("%d", i)))
 		if err != nil {
 			t.Fatal(err)
 		}

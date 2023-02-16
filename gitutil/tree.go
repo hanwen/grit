@@ -1,20 +1,33 @@
-// Copyright 2023 Google Inc. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
-
-package server
+package gitutil
 
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
-	"github.com/hanwen/gritfs/gritfs"
 )
+
+type sortableEntries []object.TreeEntry
+
+func (sortableEntries) sortName(te object.TreeEntry) string {
+	if te.Mode == filemode.Dir {
+		return te.Name + "/"
+	}
+	return te.Name
+}
+func (se sortableEntries) Len() int               { return len(se) }
+func (se sortableEntries) Less(i int, j int) bool { return se.sortName(se[i]) < se.sortName(se[j]) }
+func (se sortableEntries) Swap(i int, j int)      { se[i], se[j] = se[j], se[i] }
+
+func SortTreeEntries(es []object.TreeEntry) {
+	se := sortableEntries(es)
+	sort.Sort(se)
+}
 
 type lazyTreeNode struct {
 	mode filemode.FileMode
@@ -59,18 +72,8 @@ func (n *lazyTreeNode) encode(s storer.EncodedObjectStorer) (plumbing.Hash, erro
 			})
 		}
 	}
-	gritfs.SortTreeEntries(es)
 
-	t := object.Tree{Entries: es}
-
-	enc := s.NewEncodedObject()
-	enc.SetType(plumbing.TreeObject)
-	if err := t.Encode(enc); err != nil {
-		return plumbing.ZeroHash, err
-	}
-
-	id, err := s.SetEncodedObject(enc)
-	return id, err
+	return SaveTree(s, es)
 }
 
 func (n *lazyTreeNode) materialize(t *object.Tree) {

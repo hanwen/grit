@@ -16,7 +16,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +29,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	"github.com/hanwen/gritfs/gitutil"
 	"github.com/hanwen/gritfs/protov2"
 )
 
@@ -370,23 +370,6 @@ func (n *TreeNode) GetTreeNode() *TreeNode {
 
 // c&p from go-git
 
-type sortableEntries []object.TreeEntry
-
-func (sortableEntries) sortName(te object.TreeEntry) string {
-	if te.Mode == filemode.Dir {
-		return te.Name + "/"
-	}
-	return te.Name
-}
-func (se sortableEntries) Len() int               { return len(se) }
-func (se sortableEntries) Less(i int, j int) bool { return se.sortName(se[i]) < se.sortName(se[j]) }
-func (se sortableEntries) Swap(i int, j int)      { se[i], se[j] = se[j], se[i] }
-
-func SortTreeEntries(es []object.TreeEntry) {
-	se := sortableEntries(es)
-	sort.Sort(se)
-}
-
 func (n *TreeNode) DirMode() filemode.FileMode {
 	return filemode.Dir
 }
@@ -412,7 +395,7 @@ func (n *TreeNode) TreeEntries() ([]object.TreeEntry, error) {
 		}
 		se = append(se, e)
 	}
-	SortTreeEntries(se)
+	gitutil.SortTreeEntries(se)
 
 	return se, nil
 }
@@ -456,16 +439,8 @@ func (n *TreeNode) idTS() (id plumbing.Hash, idTime time.Time, err error) {
 		return n.id, n.idTime, nil
 	}
 
-	SortTreeEntries(se)
-	t := object.Tree{Entries: se}
-	enc := n.root.repo.Storer.NewEncodedObject()
-	enc.SetType(plumbing.TreeObject)
-	if err := t.Encode(enc); err != nil {
-		return id, idTime, err
-	}
-
+	n.id, err = gitutil.SaveTree(n.root.repo.Storer, se)
 	n.idTime = startTS
-	n.id, err = n.root.repo.Storer.SetEncodedObject(enc)
 	return n.id, n.idTime, err
 }
 
@@ -654,20 +629,11 @@ func (r *RepoNode) GetCommit() object.Commit {
 }
 
 func (r *RepoNode) StoreCommit(c *object.Commit) error {
-	enc := r.repo.Storer.NewEncodedObject()
-	enc.SetType(plumbing.CommitObject)
-	if err := c.Encode(enc); err != nil {
-		return err
-	}
-
 	var err error
-	r.id, err = r.repo.Storer.SetEncodedObject(enc)
-	if err != nil {
-		return err
-	}
+	r.id, err = gitutil.SaveCommit(r.repo.Storer, c)
 
 	// decode the object again so it has a Storer reference.
-	c, err = object.DecodeCommit(r.repo.Storer, enc)
+	c, err = r.repo.CommitObject(r.id)
 	if err != nil {
 		return err
 	}

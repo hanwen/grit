@@ -19,6 +19,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	"github.com/hanwen/gritfs/gitutil"
 	"github.com/hanwen/gritfs/gritfs"
 )
 
@@ -236,7 +237,7 @@ func commit(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 		if err != nil {
 			return err
 		}
-		id, err := PatchTree(repoNode.Repository().Storer, prevTree, changes)
+		id, err := gitutil.PatchTree(repoNode.Repository().Storer, prevTree, changes)
 		c.TreeHash = id
 	}
 
