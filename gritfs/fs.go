@@ -58,8 +58,13 @@ func (n *BlobNode) GetRepoNode() *RepoNode {
 	return n.root
 }
 
+func (n *BlobNode) idTS() (plumbing.Hash, time.Time, error) {
+	return n.id, n.modTime, nil
+}
+
 func (n *BlobNode) ID() (plumbing.Hash, error) {
-	return n.id, nil
+	id, _, err := n.idTS()
+	return id, err
 }
 
 func (n *BlobNode) DirMode() filemode.FileMode {
@@ -225,7 +230,7 @@ func (n *BlobNode) saveToGit() error {
 	n.id = id
 	n.size = uint64(sz)
 	n.modTime = time.Now()
-	log.Println("new hash is", id)
+	log.Printf("%s: new hash is %s", n.Path(nil), id)
 	return nil
 }
 
@@ -326,6 +331,7 @@ func (n *BlobNode) materialize() error {
 ////////////////////////////////////////////////////////////////
 
 type Node interface {
+	idTS() (plumbing.Hash, time.Time, error)
 	ID() (plumbing.Hash, error)
 	DirMode() filemode.FileMode
 	GetRepoNode() *RepoNode
@@ -339,6 +345,8 @@ type TreeNode struct {
 
 	mu      sync.Mutex
 	modTime time.Time
+	id      plumbing.Hash
+	idTime  time.Time
 }
 
 func (n *TreeNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
@@ -384,8 +392,9 @@ func (n *TreeNode) DirMode() filemode.FileMode {
 }
 
 func (n *TreeNode) TreeEntries() ([]object.TreeEntry, error) {
-	var se []object.TreeEntry
-	for k, v := range n.Children() {
+	children := n.Children()
+	se := make([]object.TreeEntry, 0, len(children))
+	for k, v := range children {
 		ops, ok := v.Operations().(Node)
 		if !ok {
 			continue
@@ -408,23 +417,56 @@ func (n *TreeNode) TreeEntries() ([]object.TreeEntry, error) {
 	return se, nil
 }
 
-// ID computes the hash of the tree on the fly. We could cache this,
-// but invalidating looks hard.
 func (n *TreeNode) ID() (id plumbing.Hash, err error) {
-	entries, err := n.TreeEntries()
-	if err != nil {
-		return id, err
-	}
-	t := object.Tree{Entries: entries}
+	id, _, err = n.idTS()
+	return id, err
+}
 
+func (n *TreeNode) idTS() (id plumbing.Hash, idTime time.Time, err error) {
+	startTS := time.Now()
+	children := n.Children()
+
+	uptodate := n.modTime.Before(n.idTime) && n.id != plumbing.ZeroHash
+
+	se := make([]object.TreeEntry, 0, len(children))
+	for nm, node := range children {
+		ops, ok := node.Operations().(Node)
+		if !ok {
+			continue
+		}
+
+		id, idTS, err := ops.idTS()
+		if err != nil {
+			return id, idTime, err
+		}
+
+		e := object.TreeEntry{
+			Name: nm,
+			Mode: ops.DirMode(),
+			Hash: id,
+		}
+		se = append(se, e)
+
+		if idTS.After(n.idTime) {
+			uptodate = false
+		}
+	}
+
+	if uptodate {
+		return n.id, n.idTime, nil
+	}
+
+	SortTreeEntries(se)
+	t := object.Tree{Entries: se}
 	enc := n.root.repo.Storer.NewEncodedObject()
 	enc.SetType(plumbing.TreeObject)
 	if err := t.Encode(enc); err != nil {
-		return id, err
+		return id, idTime, err
 	}
 
-	id, err = n.root.repo.Storer.SetEncodedObject(enc)
-	return id, err
+	n.idTime = startTS
+	n.id, err = n.root.repo.Storer.SetEncodedObject(enc)
+	return n.id, n.idTime, err
 }
 
 var _ = (fs.NodeUnlinker)((*TreeNode)(nil))
@@ -491,13 +533,15 @@ type RepoNode struct {
 
 	repo *git.Repository
 	cas  *CAS
-	id   plumbing.Hash
 
 	repoPath  string
 	repoURL   *url.URL
 	gitClient *protov2.Client
 
 	commit *object.Commit
+
+	id     plumbing.Hash // Ugh, unclear responsibility vs. RepoNode.commit.Hash
+	idTime time.Time
 }
 
 func saveSizes(filename string, sizes map[plumbing.Hash]uint64) error {
@@ -616,7 +660,8 @@ func (r *RepoNode) StoreCommit(c *object.Commit) error {
 		return err
 	}
 
-	_, err := r.repo.Storer.SetEncodedObject(enc)
+	var err error
+	r.id, err = r.repo.Storer.SetEncodedObject(enc)
 	if err != nil {
 		return err
 	}
@@ -627,16 +672,25 @@ func (r *RepoNode) StoreCommit(c *object.Commit) error {
 		return err
 	}
 
-	log.Printf("new commit %v for tree %v", c.Hash, c.TreeHash)
+	log.Printf("%s: new commit %v for tree %v", r.Path(nil), c.Hash, c.TreeHash)
 	r.commit = c
 	return nil
 }
 
 func (r *RepoNode) ID() (plumbing.Hash, error) {
+	id, _, err := r.idTS()
+	return id, err
+}
+
+func (r *RepoNode) idTS() (plumbing.Hash, time.Time, error) {
+	startTS := time.Now()
+	currentID := r.id
+
 	lastTree := r.commit.TreeHash
 	treeID, err := r.TreeNode.ID()
+	var zeroTS time.Time
 	if err != nil {
-		return plumbing.ZeroHash, err
+		return plumbing.ZeroHash, zeroTS, err
 	}
 
 	if lastTree != treeID {
@@ -660,7 +714,11 @@ func (r *RepoNode) ID() (plumbing.Hash, error) {
 		r.StoreCommit(&c)
 	}
 
-	return r.commit.Hash, nil
+	if r.commit.Hash != currentID {
+		r.idTime = startTS
+		r.id = r.commit.Hash
+	}
+	return r.commit.Hash, r.idTime, nil
 }
 
 func (r *RepoNode) modules() (*config.Modules, error) {
@@ -737,10 +795,10 @@ func NewRoot(cas *CAS, repo *git.Repository,
 	root := &RepoNode{
 		repo:      repo,
 		cas:       cas,
-		id:        id,
 		repoPath:  repoPath,
 		repoURL:   repoURL,
 		gitClient: cl,
+		id:        id,
 	}
 	root.root = root
 	return root, nil
@@ -783,13 +841,17 @@ func (r *RepoNode) newGitTreeNode(ctx context.Context, id plumbing.Hash, nodePat
 		return nil, err
 	}
 
+	ts := time.Now()
 	treeNode := &TreeNode{
 		root:    r,
-		modTime: time.Now(),
+		modTime: ts,
+		id:      id,
 	}
 
 	node := r.NewPersistentInode(ctx, treeNode, fs.StableAttr{Mode: fuse.S_IFDIR})
-	return node, r.addGitTree(ctx, node, nodePath, tree, todo, unknownBlobs)
+	err = r.addGitTree(ctx, node, nodePath, tree, todo, unknownBlobs)
+	treeNode.idTime = time.Now()
+	return node, err
 }
 
 func (r *RepoNode) newSubmoduleNode(ctx context.Context, submod *config.Submodule, path string, id plumbing.Hash) (*fs.Inode, error) {
@@ -930,6 +992,7 @@ func (r *RepoNode) onAdd(ctx context.Context) error {
 		return fmt.Errorf("maybeFetchCommit(%v): %v", r.id, err)
 	}
 	r.commit = commit
+	r.id = commit.Hash
 	c := r.commit
 	tree, err := r.repo.TreeObject(c.TreeHash)
 	if err != nil {
@@ -941,6 +1004,8 @@ func (r *RepoNode) onAdd(ctx context.Context) error {
 	go func() {
 		err := r.addGitTree(ctx, &r.Inode, "", tree, submoduleLoads, unknownBlobs)
 		close(submoduleLoads)
+		r.TreeNode.id = c.TreeHash
+		r.TreeNode.idTime = time.Now()
 		if err != nil {
 			log.Fatalf("addGitTree: %v", err)
 		}
@@ -985,5 +1050,8 @@ func (r *RepoNode) onAdd(ctx context.Context) error {
 			saveSizes(fn, newSizes)
 		}
 	}
+
+	r.idTime = time.Now()
+
 	return nil
 }

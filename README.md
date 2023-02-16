@@ -1,17 +1,17 @@
-'glit' = 'git' but new and glittery.
+'grit' = 'git' but new and unpolished.
 
 
 TL;DR
 
 * A writable FUSE filesystem that stores data in Git
 
-* A command 'glit' that lets you do version control in a Glit tree
+* A command 'grit' that lets you do version control in a Grit tree
 
-* Glit supports submodules natively
+* Grit supports submodules natively
 
-* Glit does not expose the .git directory, ensuring that users cannot break abstraction boundaries
+* Grit does not expose the .git directory, ensuring that users cannot break abstraction boundaries
 
-* Glit needs go-fuse; it probably doesn't work on OSX
+* Grit needs go-fuse; it probably doesn't work on OSX
 
 
 VISION
@@ -29,52 +29,70 @@ By bypassing the Git command-line, we can control the entire user-experience. Th
 By implementing submodule support natively, we can provide a first-class support for Gerrit topics.
 
 
+PERFORMANCE
+
+The following command
+```
+go run cmd/fuse/main.go -repo ~/tmp/android/ \
+   -url https://android.googlesource.com/platform/superproject/ \
+   -id 9f8a75a0fcce971f695cfb45ed4a6888ef88d4f0 \
+   /tmp/x
+```
+
+* starting from scratch takes 2m01 on a 300mbps connection (file content
+>10k lazily fetched), on a i7-8665U@1.9ghz.
+
+* with hot cache, 13 seconds from start to mount ready.
+
+* adding file under external/tink/ => 0.495s to update superproject
+  SHA1. This is equivalent to calculating status
+
+* enumerating 1M files: 48.4s.
+
 
 EXAMPLE
 
 To start the daemon,
 
 ```
-git clone --recursive https://gerrit.googlesource.com/gerrit /tmp/gerrit
+git init --bare /tmp/g
 mkdir /tmp/x
-fusermount -u /tmp/x ; go run ./cmd/fuse/main.go -id 209c4dee0ecc2effea8259879b4b882eaf7c41bb -repo /tmp/gerrit/.git  /tmp/x
+go run ./cmd/fuse/main.go -url https://gerrit.googlesource.com/gerrit -id 209c4dee0ecc2effea8259879b4b882eaf7c41bb -repo /tmp/gerrit/.git  /tmp/x
 ```
 
 To interact with the checkout
 
 ```
+
 # List top commit
-go run ./cmd/glit/main.go -dir /tmp/x log
+go run ./cmd/grit/main.go -dir /tmp/x log
 
 # List 3 commits, with their patches
-go run ./cmd/glit/main.go -dir /tmp/x log -p -n 3
+go run ./cmd/grit/main.go -dir /tmp/x log -p -n 3
 
 # List 3 commits of a submodule
-go run ./cmd/glit/main.go -dir /tmp/x/modules/jgit log -n 3
+go run ./cmd/grit/main.go -dir /tmp/x/modules/jgit log -n 3
 
 # List files in tree
-go run ./cmd/glit/main.go -dir /tmp/x ls-tree -r
+go run ./cmd/grit/main.go -dir /tmp/x ls-tree -r
 
 # Checkout is writable
 echo hoi > /tmp/x/modules/jgit/foobar
 ls -l /tmp/x/modules/jgit/foobar
 
 # Writes are automatically checkpointed
-go run ./cmd/glit/main.go -dir /tmp/x/modules/jgit log -p
+go run ./cmd/grit/main.go -dir /tmp/x/modules/jgit log -p
 
 # A change in a submodule immediately affects the superproject
-go run ./cmd/glit/main.go -dir /tmp/x log
+go run ./cmd/grit/main.go -dir /tmp/x log
 
 # A second write amends the checkpointed commit
 echo hoi > /tmp/x/modules/jgit/foobar2
-go run ./cmd/glit/main.go -dir /tmp/x/modules/jgit log -p -n 2
+go run ./cmd/grit/main.go -dir /tmp/x/modules/jgit log -p -n 2
 
 # Amend the commit message
-go run ./cmd/glit/main.go -dir /tmp/x/modules/jgit amend
+go run ./cmd/grit/main.go -dir /tmp/x/modules/jgit amend
 ```
-
-
-
 
 
 
