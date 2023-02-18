@@ -33,12 +33,11 @@ type BlobNode struct {
 	root *RepoNode
 
 	// mutable metadata
-	mu         sync.Mutex
-	mode       filemode.FileMode
-	size       uint64
-	id         plumbing.Hash
-	linkTarget []byte
-	modTime    time.Time
+	mu      sync.Mutex
+	mode    filemode.FileMode
+	size    uint64
+	id      plumbing.Hash
+	modTime time.Time
 
 	// If opened, filedesc for the open file. Also protected by mu
 	backingFile string
@@ -61,6 +60,21 @@ func (n *BlobNode) ID() (plumbing.Hash, error) {
 	return id, err
 }
 
+func (n *BlobNode) SetID(id plumbing.Hash, mode filemode.FileMode) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.id = id
+	n.modTime = time.Now()
+	n.mode = mode
+
+	ok := true
+	n.size, ok = n.root.repo.CachedBlobSize(id)
+	if !ok {
+		return fmt.Errorf("size missing: %v", id)
+	}
+	return nil
+}
+
 func (n *BlobNode) DirMode() filemode.FileMode {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -69,6 +83,10 @@ func (n *BlobNode) DirMode() filemode.FileMode {
 
 func (n *BlobNode) GetTreeNode() *TreeNode {
 	return nil
+}
+
+func (n *BlobNode) FitsMode(mode filemode.FileMode) bool {
+	return mode == filemode.Regular || mode == filemode.Executable || mode == filemode.Symlink
 }
 
 var _ = (fs.NodeOpener)((*BlobNode)(nil))
@@ -158,7 +176,23 @@ func (n *BlobNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrO
 var _ = (fs.NodeReadlinker)((*BlobNode)(nil))
 
 func (n *BlobNode) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
-	return n.linkTarget, 0
+	obj, err := n.root.repo.BlobObject(n.id)
+	if err != nil {
+		return nil, syscall.EIO
+	}
+
+	r, err := obj.Reader()
+	if err != nil {
+		return nil, syscall.EIO
+	}
+	defer r.Close()
+
+	content, err := ioutil.ReadAll(r)
+	if err != nil {
+		return nil, syscall.EIO
+	}
+
+	return content, 0
 }
 
 type fileAllOps interface {
@@ -314,11 +348,15 @@ func (n *BlobNode) materialize() error {
 ////////////////////////////////////////////////////////////////
 
 type Node interface {
+	fs.InodeEmbedder
+
 	idTS() (plumbing.Hash, time.Time, error)
 	ID() (plumbing.Hash, error)
 	DirMode() filemode.FileMode
 	GetRepoNode() *RepoNode
 	GetTreeNode() *TreeNode
+	FitsMode(filemode.FileMode) bool
+	SetID(plumbing.Hash, filemode.FileMode) error
 }
 
 type TreeNode struct {
@@ -330,6 +368,60 @@ type TreeNode struct {
 	modTime time.Time
 	id      plumbing.Hash
 	idTime  time.Time
+}
+
+func (n *TreeNode) FitsMode(mode filemode.FileMode) bool {
+	return mode == filemode.Dir
+}
+
+func (n *TreeNode) SetID(id plumbing.Hash, mode filemode.FileMode) error {
+	tree, err := n.root.repo.TreeObject(id)
+	if err != nil {
+		return err
+	}
+
+	var remove []string
+	for nm, child := range n.Children() {
+		if _, ok := child.Operations().(Node); !ok {
+			continue
+		}
+		entry, _ := tree.FindEntry(nm)
+		if entry == nil {
+			remove = append(remove, nm)
+		}
+	}
+	n.RmChild(remove...)
+
+	nodePath := n.Path(n.root.EmbeddedInode())
+	for _, e := range tree.Entries {
+		child := n.GetChild(e.Name)
+		if child != nil {
+			node, ok := child.Operations().(Node)
+			if ok && node.FitsMode(e.Mode) {
+				if err := node.SetID(e.Hash, e.Mode); err != nil {
+					return err
+				}
+				continue
+			}
+		}
+
+		childOps, err := n.root.newGitNode(e.Mode, e.Hash, filepath.Join(nodePath, e.Name))
+		if err != nil {
+			return err
+		}
+
+		fsMode := uint32(e.Mode)
+		if fsMode == uint32(filemode.Submodule) {
+			fsMode = fuse.S_IFDIR
+		}
+		child = n.NewPersistentInode(context.Background(), childOps, fs.StableAttr{Mode: fsMode})
+		n.AddChild(e.Name, child, true)
+		if err := childOps.SetID(e.Hash, e.Mode); err != nil {
+
+			return err
+		}
+	}
+	return nil
 }
 
 func (n *TreeNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
@@ -504,6 +596,10 @@ func (n *RepoNode) Repository() *repo.Repository {
 	return n.repo
 }
 
+func (n *RepoNode) FitsMode(mode filemode.FileMode) bool {
+	return mode == filemode.Submodule
+}
+
 func IsGritCommit(c *object.Commit) bool {
 	idx := strings.LastIndex(c.Message, "\n\n")
 	if idx == -1 {
@@ -622,8 +718,19 @@ func (r *RepoNode) idTS() (plumbing.Hash, time.Time, error) {
 	return r.commit.Hash, r.idTime, nil
 }
 
-func NewRoot(cas *CAS, repo *repo.Repository, commit *object.Commit) (fs.InodeEmbedder, error) {
+func (n *RepoNode) SetID(id plumbing.Hash, mode filemode.FileMode) error {
+	commit, err := n.repo.CommitObject(id)
+	if err != nil {
+		return err
+	}
 
+	n.commit = commit
+	n.idTime = time.Now()
+
+	return n.TreeNode.SetID(commit.TreeHash, mode)
+}
+
+func NewRoot(cas *CAS, repo *repo.Repository, commit *object.Commit) (*RepoNode, error) {
 	root := &RepoNode{
 		repo:   repo,
 		cas:    cas,
@@ -634,7 +741,7 @@ func NewRoot(cas *CAS, repo *repo.Repository, commit *object.Commit) (fs.InodeEm
 	return root, nil
 }
 
-func (r *RepoNode) newGitBlobNode(ctx context.Context, mode filemode.FileMode, id plumbing.Hash) (*fs.Inode, error) {
+func (r *RepoNode) newGitBlobNode(mode filemode.FileMode, id plumbing.Hash) (Node, error) {
 	bn := &BlobNode{
 		root:    r,
 		id:      id,
@@ -646,63 +753,22 @@ func (r *RepoNode) newGitBlobNode(ctx context.Context, mode filemode.FileMode, i
 	} else {
 		bn.size = sz
 	}
-	if mode == filemode.Symlink {
-		obj, err := r.repo.BlobObject(id)
-		if err != nil {
-			return nil, err
-		}
-
-		// Assuming blob filter will always load short files.
-		rc, err := obj.Reader()
-		if err != nil {
-			return nil, err
-		}
-
-		defer rc.Close()
-		data, err := ioutil.ReadAll(rc)
-		if err != nil {
-			return nil, err
-		}
-		bn.linkTarget = data
-	}
-	return r.NewPersistentInode(ctx, bn, fs.StableAttr{Mode: uint32(mode)}), nil
+	return bn, nil
 }
 
-func (r *RepoNode) newGitTreeNode(ctx context.Context, id plumbing.Hash, nodePath string) (*fs.Inode, error) {
-	tree, err := r.repo.TreeObject(id)
-	if err != nil {
-		return nil, err
-	}
-
+func (r *RepoNode) newGitTreeNode(id plumbing.Hash, nodePath string) (Node, error) {
 	ts := time.Now()
 	treeNode := &TreeNode{
 		root:    r,
 		modTime: ts,
 		id:      id,
-		idTime:  time.Now(),
+		idTime:  ts,
 	}
 
-	node := r.NewPersistentInode(ctx, treeNode, fs.StableAttr{Mode: fuse.S_IFDIR})
-	err = r.addGitTree(ctx, node, nodePath, tree)
-	return node, err
+	return treeNode, nil
 }
 
-// addGitTree adds entries under tree to node.
-func (r *RepoNode) addGitTree(ctx context.Context, node *fs.Inode,
-	nodePath string, tree *object.Tree) error {
-
-	for _, e := range tree.Entries {
-		path := filepath.Join(nodePath, e.Name)
-		child, err := r.newGitNode(ctx, e.Mode, e.Hash, path)
-		if err != nil {
-			return err
-		}
-		node.AddChild(e.Name, child, true)
-	}
-	return nil
-}
-
-func (r *RepoNode) newSubmoduleNode(ctx context.Context, id plumbing.Hash, path string) (*fs.Inode, error) {
+func (r *RepoNode) newSubmoduleNode(id plumbing.Hash, path string) (Node, error) {
 	subRepo, err := r.repo.SubmoduleByPath(r.commit, path)
 	if err != nil {
 		return nil, err
@@ -715,17 +781,17 @@ func (r *RepoNode) newSubmoduleNode(ctx context.Context, id plumbing.Hash, path 
 	if err != nil {
 		return nil, err
 	}
-	return r.NewPersistentInode(ctx, ops, fs.StableAttr{Mode: fuse.S_IFDIR}), nil
+	return ops, nil
 }
 
-func (r *RepoNode) newGitNode(ctx context.Context, mode filemode.FileMode, id plumbing.Hash, nodePath string) (*fs.Inode, error) {
+func (r *RepoNode) newGitNode(mode filemode.FileMode, id plumbing.Hash, nodePath string) (Node, error) {
 	switch mode {
 	case filemode.Dir:
-		return r.newGitTreeNode(ctx, id, nodePath)
+		return r.newGitTreeNode(id, nodePath)
 	case filemode.Submodule:
-		return r.newSubmoduleNode(ctx, id, nodePath)
+		return r.newSubmoduleNode(id, nodePath)
 	case filemode.Executable, filemode.Regular, filemode.Symlink:
-		return r.newGitBlobNode(ctx, mode, id)
+		return r.newGitBlobNode(mode, id)
 	default:
 		return nil, fmt.Errorf("unsupported mode %v %q", mode, nodePath)
 	}
@@ -740,9 +806,5 @@ func (r *RepoNode) OnAdd(ctx context.Context) {
 }
 
 func (r *RepoNode) onAdd(ctx context.Context) error {
-	tree, err := r.repo.TreeObject(r.commit.TreeHash)
-	if err != nil {
-		log.Fatalf("TreeObject %s: %v", r.commit.TreeHash, err)
-	}
-	return r.addGitTree(ctx, r.EmbeddedInode(), "", tree)
+	return r.TreeNode.SetID(r.commit.TreeHash, filemode.Dir)
 }

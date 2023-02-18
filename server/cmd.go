@@ -47,7 +47,7 @@ func NewCommandServer(cas *gritfs.CAS, repo *repo.Repository, commit *object.Com
 	}
 
 	root := &Root{
-		RepoNode: r.(*gritfs.RepoNode),
+		RepoNode: r,
 	}
 	commandServer := &CommandServer{
 		root: root,
