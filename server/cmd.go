@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/hanwen/go-fuse/v2/fs"
@@ -67,6 +68,7 @@ func NewCommandServer(cas *gritfs.CAS, repo *repo.Repository, commit *object.Com
 }
 
 func (s *CommandServer) Exec(req *CommandRequest, rep *CommandReply) error {
+	start := time.Now()
 	log.Printf("executing %#v", req)
 	ioc, err := NewIOClient(req.RPCSocket)
 	if err != nil {
@@ -74,6 +76,7 @@ func (s *CommandServer) Exec(req *CommandRequest, rep *CommandReply) error {
 	}
 	exit, err := RunCommand(req.Args, req.Dir, ioc, s.root)
 	rep.ExitCode = exit
+	log.Printf("finished in %v", time.Now().Sub(start))
 	return err
 }
 
