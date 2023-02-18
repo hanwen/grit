@@ -133,6 +133,7 @@ func (s *scanner) readLine() (packet []byte, magic bool, err error) {
 type Client struct {
 	url string
 
+	Debug        bool
 	capabilities map[string]struct{}
 	fetchCaps    map[string]struct{}
 	lsRefsCaps   map[string]struct{}
@@ -255,7 +256,25 @@ func (cl *Client) NewRequest(v2req v2Req) (*http.Request, error) {
 	return req, nil
 }
 
+func (cl *Client) do(req *http.Request) (*http.Response, error) {
+	if cl.Debug {
+		log.Printf("Req %v", req)
+	}
+	rep, err := http.DefaultClient.Do(req)
+	if cl.Debug {
+		if err != nil {
+			log.Printf("HTTP err: %v", err)
+		} else {
+			log.Printf("HTTP rep: %v", rep)
+		}
+	}
+	return rep, err
+}
+
 func (cl *Client) ObjectInfo(ids []plumbing.Hash) (map[plumbing.Hash]uint64, error) {
+	if len(ids) == 0 {
+		return map[plumbing.Hash]uint64{}, nil
+	}
 	if _, ok := cl.capabilities["object-info"]; !ok {
 		return nil, ErrUnsupported
 	}
@@ -268,7 +287,7 @@ func (cl *Client) ObjectInfo(ids []plumbing.Hash) (map[plumbing.Hash]uint64, err
 	if err != nil {
 		return nil, err
 	}
-	rep, err := http.DefaultClient.Do(req)
+	rep, err := cl.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -379,9 +398,12 @@ func (cl *Client) Fetch(storer storage.Storer, opts *FetchOptions) error {
 	if err != nil {
 		return err
 	}
-	rep, err := http.DefaultClient.Do(req)
+	rep, err := cl.do(req)
 	if err != nil {
 		return err
+	}
+	if rep.StatusCode != 200 {
+		return fmt.Errorf("status %s", rep.Status)
 	}
 	defer rep.Body.Close()
 
