@@ -13,6 +13,7 @@ import (
 	fusefs "github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"github.com/hanwen/gritfs/gritfs"
+	"github.com/hanwen/gritfs/repo"
 	"github.com/hanwen/gritfs/server"
 )
 
@@ -21,6 +22,7 @@ func main() {
 	originURL := flag.String("url", "", "URL for the repo")
 	casDir := flag.String("cas", filepath.Join(os.Getenv("HOME"), ".cache", "gritfs2"), "")
 	debug := flag.Bool("debug", false, "FUSE debug")
+	gitDebug := flag.Bool("git_debug", false, "git debug")
 	id := flag.String("id", "", "")
 	flag.Parse()
 	if len(flag.Args()) != 1 {
@@ -36,9 +38,9 @@ func main() {
 		*repoPath = filepath.Join(*repoPath, ".git")
 	}
 
-	repo, err := git.PlainOpen(*repoPath)
+	gitRepo, err := git.PlainOpen(*repoPath)
 	if err != nil {
-		log.Fatal("PlainOpen", err)
+		log.Fatalf("PlainOpen(%q): %v", *repoPath, err)
 	}
 
 	h := plumbing.NewHash(*id) // err handling?
@@ -58,7 +60,19 @@ func main() {
 		log.Fatalf("Parse(%q): %v", *originURL, err)
 	}
 
-	root, err := server.NewCommandServer(cas, repo, *repoPath, h, repoURL)
+	gritRepo, err := repo.NewRepo(gitRepo, *repoPath, repoURL)
+	if err != nil {
+		log.Fatalf("NewRepo(%q, %s): %v", *repoPath, repoURL, err)
+	}
+	if *gitDebug {
+		gritRepo.SetDebug(*gitDebug)
+	}
+	log.Printf("%s: fetching %s", repoURL, h)
+	commit, err := gritRepo.FetchCommit(h)
+	if err != nil {
+		log.Fatalf("FetchCommit(%s): %v", h, err)
+	}
+	root, err := server.NewCommandServer(cas, gritRepo, commit)
 	if err != nil {
 		log.Fatal("NewRoot", err)
 	}

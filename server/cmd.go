@@ -12,16 +12,15 @@ import (
 	"log"
 	"net"
 	"net/rpc"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 
-	git "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"github.com/hanwen/gritfs/gritfs"
+	"github.com/hanwen/gritfs/repo"
 )
 
 type CommandServer struct {
@@ -41,10 +40,8 @@ func (r *Root) OnAdd(ctx context.Context) {
 	r.AddChild(".grit", ch, true)
 }
 
-func NewCommandServer(cas *gritfs.CAS, repo *git.Repository,
-	repoPath string,
-	id plumbing.Hash, repoURL *url.URL) (fs.InodeEmbedder, error) {
-	r, err := gritfs.NewRoot(cas, repo, repoPath, id, repoURL)
+func NewCommandServer(cas *gritfs.CAS, repo *repo.Repository, commit *object.Commit) (fs.InodeEmbedder, error) {
+	r, err := gritfs.NewRoot(cas, repo, commit)
 	if err != nil {
 		return nil, err
 	}
