@@ -434,12 +434,40 @@ func FindCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (in
 
 }
 
+func CheckoutCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
+	flagSet := flag.NewFlagSet("checkout", flag.ContinueOnError)
+	flagSet.SetOutput(ioc)
+	flagSet.Usage = usage(flagSet)
+	if err := flagSet.Parse(args); err != nil {
+		return 2, nil // Parse already prints diagnostics.
+	}
+
+	if len(flagSet.Args()) != 1 {
+		flagSet.Usage()
+		return 2, nil
+	}
+	h := plumbing.NewHash(flagSet.Arg(0))
+
+	if _, err := root.GetRepoNode().Repository().FetchCommit(h); err != nil {
+		ioc.Printf("FetchCommit: %s\n", err)
+		return 1, nil
+	}
+
+	if err := root.SetID(h, filemode.Dir); err != nil {
+		ioc.Printf("%s\n", err)
+		return 1, nil
+	}
+	return 0, nil
+
+}
+
 var dispatch = map[string]func([]string, string, *IOClient, gritfs.Node) (int, error){
-	"log":     LogCommand,
-	"amend":   AmendCommand,
-	"ls-tree": LsTreeCommand,
-	"commit":  CommitCommand,
-	"find":    FindCommand,
+	"log":      LogCommand,
+	"amend":    AmendCommand,
+	"ls-tree":  LsTreeCommand,
+	"commit":   CommitCommand,
+	"find":     FindCommand,
+	"checkout": CheckoutCommand,
 }
 
 func Usage(ioc *IOClient) (int, error) {

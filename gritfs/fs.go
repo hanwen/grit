@@ -27,6 +27,20 @@ import (
 	"github.com/hanwen/gritfs/repo"
 )
 
+type Node interface {
+	fs.InodeEmbedder
+
+	idTS() (plumbing.Hash, time.Time, error)
+	ID() (plumbing.Hash, error)
+	DirMode() filemode.FileMode
+	GetRepoNode() *RepoNode
+	GetTreeNode() *TreeNode
+	FitsMode(filemode.FileMode) bool
+	SetID(plumbing.Hash, filemode.FileMode) error
+}
+
+////////////////////////////////////////////////////////////////
+
 type BlobNode struct {
 	fs.Inode
 
@@ -36,7 +50,7 @@ type BlobNode struct {
 	mu      sync.Mutex
 	mode    filemode.FileMode
 	size    uint64
-	id      plumbing.Hash
+	blobID  plumbing.Hash
 	modTime time.Time
 
 	// If opened, filedesc for the open file. Also protected by mu
@@ -52,7 +66,7 @@ func (n *BlobNode) GetRepoNode() *RepoNode {
 }
 
 func (n *BlobNode) idTS() (plumbing.Hash, time.Time, error) {
-	return n.id, n.modTime, nil
+	return n.blobID, n.modTime, nil
 }
 
 func (n *BlobNode) ID() (plumbing.Hash, error) {
@@ -63,7 +77,7 @@ func (n *BlobNode) ID() (plumbing.Hash, error) {
 func (n *BlobNode) SetID(id plumbing.Hash, mode filemode.FileMode) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.id = id
+	n.blobID = id
 	n.modTime = time.Now()
 	n.mode = mode
 
@@ -144,7 +158,7 @@ func (n *BlobNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAtt
 
 // expandBlob reads the blob from Git and saves into CAS.
 func (n *BlobNode) expandBlob() error {
-	obj, err := n.root.repo.BlobObject(n.id)
+	obj, err := n.root.repo.BlobObject(n.blobID)
 	if err != nil {
 		return err
 	}
@@ -158,7 +172,7 @@ func (n *BlobNode) expandBlob() error {
 		return err
 	}
 
-	return n.root.cas.Write(n.id, data)
+	return n.root.cas.Write(n.blobID, data)
 }
 
 var _ = (fs.NodeGetattrer)((*BlobNode)(nil))
@@ -176,7 +190,7 @@ func (n *BlobNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrO
 var _ = (fs.NodeReadlinker)((*BlobNode)(nil))
 
 func (n *BlobNode) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
-	obj, err := n.root.repo.BlobObject(n.id)
+	obj, err := n.root.repo.BlobObject(n.blobID)
 	if err != nil {
 		return nil, syscall.EIO
 	}
@@ -244,7 +258,7 @@ func (n *BlobNode) saveToGit() error {
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.id = id
+	n.blobID = id
 	n.size = uint64(sz)
 	n.modTime = time.Now()
 	log.Printf("%s: new hash is %s", n.Path(nil), id)
@@ -309,17 +323,17 @@ func (n *BlobNode) materialize() error {
 	defer t.Close()
 
 	var zero plumbing.Hash
-	if n.id != zero {
-		f, ok := n.root.cas.Open(n.id)
+	if n.blobID != zero {
+		f, ok := n.root.cas.Open(n.blobID)
 		if !ok {
 			if err := n.expandBlob(); err != nil {
 				log.Printf("load: %v", err)
 			} else {
-				f, ok = n.root.cas.Open(n.id)
+				f, ok = n.root.cas.Open(n.blobID)
 			}
 		}
 		if !ok {
-			return fmt.Errorf("can't materialize %s", n.id)
+			return fmt.Errorf("can't materialize %s", n.blobID)
 		}
 		defer f.Close()
 
@@ -347,18 +361,6 @@ func (n *BlobNode) materialize() error {
 
 ////////////////////////////////////////////////////////////////
 
-type Node interface {
-	fs.InodeEmbedder
-
-	idTS() (plumbing.Hash, time.Time, error)
-	ID() (plumbing.Hash, error)
-	DirMode() filemode.FileMode
-	GetRepoNode() *RepoNode
-	GetTreeNode() *TreeNode
-	FitsMode(filemode.FileMode) bool
-	SetID(plumbing.Hash, filemode.FileMode) error
-}
-
 type TreeNode struct {
 	fs.Inode
 
@@ -366,7 +368,7 @@ type TreeNode struct {
 
 	mu      sync.Mutex
 	modTime time.Time
-	id      plumbing.Hash
+	treeID  plumbing.Hash
 	idTime  time.Time
 }
 
@@ -421,6 +423,10 @@ func (n *TreeNode) SetID(id plumbing.Hash, mode filemode.FileMode) error {
 			return err
 		}
 	}
+
+	n.modTime = time.Now()
+	n.idTime = time.Now()
+	n.treeID = id
 	return nil
 }
 
@@ -484,7 +490,7 @@ func (n *TreeNode) idTS() (id plumbing.Hash, idTime time.Time, err error) {
 	startTS := time.Now()
 	children := n.Children()
 
-	uptodate := n.modTime.Before(n.idTime) && n.id != plumbing.ZeroHash
+	uptodate := n.modTime.Before(n.idTime) && n.treeID != plumbing.ZeroHash
 
 	se := make([]object.TreeEntry, 0, len(children))
 	for nm, node := range children {
@@ -511,12 +517,13 @@ func (n *TreeNode) idTS() (id plumbing.Hash, idTime time.Time, err error) {
 	}
 
 	if uptodate {
-		return n.id, n.idTime, nil
+		return n.treeID, n.idTime, nil
 	}
 
-	n.id, err = gitutil.SaveTree(n.root.repo.Storer, se)
+	n.treeID, err = gitutil.SaveTree(n.root.repo.Storer, se)
 	n.idTime = startTS
-	return n.id, n.idTime, err
+
+	return n.treeID, n.idTime, err
 }
 
 var _ = (fs.NodeUnlinker)((*TreeNode)(nil))
@@ -660,11 +667,10 @@ func (r *RepoNode) GetCommit() object.Commit {
 }
 
 func (r *RepoNode) StoreCommit(c *object.Commit) error {
-	var err error
-	r.id, err = gitutil.SaveCommit(r.repo.Storer, c)
+	commitID, err := gitutil.SaveCommit(r.repo.Storer, c)
 
 	// decode the object again so it has a Storer reference.
-	c, err = r.repo.CommitObject(r.id)
+	c, err = r.repo.CommitObject(commitID)
 	if err != nil {
 		return err
 	}
@@ -681,10 +687,11 @@ func (r *RepoNode) ID() (plumbing.Hash, error) {
 
 func (r *RepoNode) idTS() (plumbing.Hash, time.Time, error) {
 	startTS := time.Now()
-	currentID := r.id
+	currentID := r.commit.Hash
 
 	lastTree := r.commit.TreeHash
 	treeID, err := r.TreeNode.ID()
+	log.Printf("TreeID %v", treeID)
 	var zeroTS time.Time
 	if err != nil {
 		return plumbing.ZeroHash, zeroTS, err
@@ -713,7 +720,6 @@ func (r *RepoNode) idTS() (plumbing.Hash, time.Time, error) {
 
 	if r.commit.Hash != currentID {
 		r.idTime = startTS
-		r.id = r.commit.Hash
 	}
 	return r.commit.Hash, r.idTime, nil
 }
@@ -744,7 +750,7 @@ func NewRoot(cas *CAS, repo *repo.Repository, commit *object.Commit) (*RepoNode,
 func (r *RepoNode) newGitBlobNode(mode filemode.FileMode, id plumbing.Hash) (Node, error) {
 	bn := &BlobNode{
 		root:    r,
-		id:      id,
+		blobID:  id,
 		mode:    mode,
 		modTime: time.Now(),
 	}
@@ -761,7 +767,7 @@ func (r *RepoNode) newGitTreeNode(id plumbing.Hash, nodePath string) (Node, erro
 	treeNode := &TreeNode{
 		root:    r,
 		modTime: ts,
-		id:      id,
+		treeID:  id,
 		idTime:  ts,
 	}
 
@@ -806,5 +812,6 @@ func (r *RepoNode) OnAdd(ctx context.Context) {
 }
 
 func (r *RepoNode) onAdd(ctx context.Context) error {
+	log.Println("onAdd", r.commit.TreeHash)
 	return r.TreeNode.SetID(r.commit.TreeHash, filemode.Dir)
 }
