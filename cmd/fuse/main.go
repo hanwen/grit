@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	git "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
 	fusefs "github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"github.com/hanwen/gritfs/gritfs"
@@ -23,13 +22,16 @@ func main() {
 	casDir := flag.String("cas", filepath.Join(os.Getenv("HOME"), ".cache", "gritfs2"), "")
 	debug := flag.Bool("debug", false, "FUSE debug")
 	gitDebug := flag.Bool("git_debug", false, "git debug")
-	id := flag.String("id", "", "")
+	workspaceName := flag.String("workspace", "", "workspace name")
 	flag.Parse()
 	if len(flag.Args()) != 1 {
 		log.Fatal("usage")
 	}
 	mntDir := flag.Arg(0)
 
+	if *workspaceName == "" {
+		log.Fatal("must specify -workspace")
+	}
 	if *originURL == "" {
 		log.Fatal("must specify -url")
 	}
@@ -42,8 +44,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("PlainOpen(%q): %v", *repoPath, err)
 	}
-
-	h := plumbing.NewHash(*id) // err handling?
 
 	cas, err := gritfs.NewCAS(*casDir)
 	if err != nil {
@@ -67,12 +67,7 @@ func main() {
 	if *gitDebug {
 		gritRepo.SetDebug(*gitDebug)
 	}
-	log.Printf("%s: fetching %s", repoURL, h)
-	commit, err := gritRepo.FetchCommit(h)
-	if err != nil {
-		log.Fatalf("FetchCommit(%s): %v", h, err)
-	}
-	root, err := server.NewCommandServer(cas, gritRepo, commit)
+	root, err := server.NewCommandServer(cas, gritRepo, *workspaceName)
 	if err != nil {
 		log.Fatal("NewRoot", err)
 	}

@@ -66,12 +66,8 @@ func TestFS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	commit, err := gritRepo.FetchCommit(tr.CommitID)
-	if err != nil {
-		t.Fatal(err)
-	}
 
-	root, err := NewCommandServer(cas, gritRepo, commit)
+	root, err := NewCommandServer(cas, gritRepo, "ws")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,6 +85,12 @@ func TestFS(t *testing.T) {
 
 	defer server.Unmount()
 
+	ioc := &testIOC{}
+	exit, err := RunCommand([]string{"checkout", tr.CommitID.String()}, "", ioc, root.RepoNode)
+	if exit != 0 || err != nil {
+		t.Errorf("exit %d, %v", exit, err)
+	}
+
 	for k, want := range input {
 		fn := filepath.Join(mntDir, k)
 		content, err := ioutil.ReadFile(fn)
@@ -100,9 +102,9 @@ func TestFS(t *testing.T) {
 		}
 	}
 
-	ioc := &testIOC{}
+	ioc = &testIOC{}
 
-	exit, err := RunCommand([]string{"log"}, "", ioc, root.RepoNode)
+	exit, err = RunCommand([]string{"log"}, "", ioc, root.RepoNode)
 	if exit != 0 || err != nil {
 		t.Errorf("exit %d, %v", exit, err)
 	}
@@ -131,14 +133,10 @@ func TestFS(t *testing.T) {
 		t.Errorf("exit %d, %v", exit, err)
 	}
 
-	if _, err := gritRepo.Reference("refs/grit/ws", true); err != nil {
+	if ref, err := gritRepo.Reference("refs/grit/ws", true); err != nil {
 		t.Fatal(err)
-	}
-
-	ioc = &testIOC{}
-	exit, err = RunCommand([]string{"checkout", tr.CommitID.String()}, "", ioc, root.RepoNode)
-	if exit != 0 || err != nil {
-		t.Errorf("exit %d, %v", exit, err)
+	} else {
+		log.Println(ref)
 	}
 
 }

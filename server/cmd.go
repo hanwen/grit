@@ -17,7 +17,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"github.com/hanwen/gritfs/gritfs"
@@ -41,8 +40,8 @@ func (r *Root) OnAdd(ctx context.Context) {
 	r.AddChild(".grit", ch, true)
 }
 
-func NewCommandServer(cas *gritfs.CAS, repo *repo.Repository, commit *object.Commit) (*Root, error) {
-	r, err := gritfs.NewRoot(cas, repo, commit)
+func NewCommandServer(cas *gritfs.CAS, repo *repo.Repository, workspaceName string) (*Root, error) {
+	r, err := gritfs.NewRoot(cas, repo, workspaceName)
 	if err != nil {
 		return nil, err
 	}

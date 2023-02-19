@@ -72,22 +72,15 @@ func findRoot(dir string, root *gritfs.RepoNode) (*fs.Inode, string, error) {
 	return rootInode, strings.Join(components[rootIdx+1:], "/"), nil
 }
 
-func wsLog(gritRepo *repo.Repository, ioc *IOClient) error {
-	ref, err := gritRepo.Reference("refs/grit/ws", true)
+func wsLog(gritRepo *repo.Repository, ioc *IOClient, wsname string) error {
+	ref, err := gritRepo.Reference(plumbing.ReferenceName("refs/grit/"+wsname), true)
 	wsID := ref.Hash()
 	wsCommit, err := gritRepo.CommitObject(wsID)
 	if err != nil {
 		return err
 	}
 	for {
-		if len(wsCommit.ParentHashes) == 0 {
-			break
-		}
-		if len(wsCommit.ParentHashes) != 2 {
-			return fmt.Errorf("workspace commit %v has != 2 parents", wsCommit.Hash)
-		}
-
-		checkedOut, err := wsCommit.Parent(1)
+		checkedOut, err := wsCommit.Parent(wsCommit.NumParents() - 1)
 		if err != nil {
 			return err
 		}
@@ -114,6 +107,10 @@ func wsLog(gritRepo *repo.Repository, ioc *IOClient) error {
 		ioc.Printf("Workspace at commit %s - %s\n", checkedOut.Hash, lines[0])
 		ioc.Printf("  Update %s\n", wsCommit.Message)
 		ioc.Printf("  Status %#v\n", status)
+
+		if wsCommit.NumParents() == 1 {
+			break
+		}
 
 		wsCommit, err = wsCommit.Parent(0)
 		if err != nil {
@@ -142,8 +139,9 @@ func WSLogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (i
 		return 2, nil
 	}
 
-	repo := root.GetRepoNode().Repository()
-	if err := wsLog(repo, ioc); err != nil {
+	repoNode := root.GetRepoNode()
+	repo := repoNode.Repository()
+	if err := wsLog(repo, ioc, repoNode.WorkspaceName()); err != nil {
 		ioc.Printf("wsLog: %v", err)
 		return 1, nil
 	}

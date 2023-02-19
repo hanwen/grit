@@ -90,7 +90,12 @@ func (n *BlobNode) SetID(id plumbing.Hash, mode filemode.FileMode, ts time.Time)
 	ok := true
 	n.size, ok = n.root.repo.CachedBlobSize(id)
 	if !ok {
-		return fmt.Errorf("size missing: %v", id)
+		blob, err := n.root.repo.BlobObject(id)
+		if err != nil {
+			return fmt.Errorf("size missing: %v", id)
+		}
+
+		n.size = uint64(blob.Size)
 	}
 	return nil
 }
@@ -267,6 +272,7 @@ func (n *BlobNode) saveToGit() error {
 	n.blobID = id
 	n.size = uint64(sz)
 	n.modTime = time.Now()
+
 	return nil
 }
 
@@ -412,7 +418,7 @@ func (n *TreeNode) SetID(id plumbing.Hash, mode filemode.FileMode, ts time.Time)
 			}
 		}
 
-		childOps, err := n.root.newGitNode(e.Mode, e.Hash, filepath.Join(nodePath, e.Name))
+		childOps, err := n.root.newGitNode(e.Mode, filepath.Join(nodePath, e.Name))
 		if err != nil {
 			return err
 		}
@@ -600,8 +606,9 @@ type RepoNode struct {
 
 	cas *CAS
 
-	repo   *repo.Repository
-	commit *object.Commit
+	workspaceName string
+	repo          *repo.Repository
+	commit        *object.Commit
 
 	// calculation timestamp for commit.Hash
 	idTime time.Time
@@ -611,8 +618,13 @@ var _ = (Node)((*RepoNode)(nil))
 
 func (n *RepoNode) Repository() *repo.Repository {
 	return n.repo
+
 }
 
+func (n *RepoNode) WorkspaceName() string {
+	return n.workspaceName
+
+}
 func (n *RepoNode) FitsMode(mode filemode.FileMode) bool {
 	return mode == filemode.Submodule
 }
@@ -715,41 +727,23 @@ func (r *RepoNode) recordWorkspaceChange(before, after *object.Commit, wsUpdate 
 	nowSig := mySig
 	nowSig.When = time.Now()
 
-	refname := plumbing.ReferenceName("refs/grit/ws")
+	refname := r.workspaceRef()
 	wsRef, err := r.repo.Reference(refname, true)
+
+	wsTree := &object.Tree{}
 	if err == plumbing.ErrReferenceNotFound {
-		treeID, err := gitutil.SaveTree(r.repo.Storer, nil)
-		if err != nil {
-			return err
-		}
-
-		wsCommit := &object.Commit{
-			Message:      "initial workspace",
-			TreeHash:     treeID,
-			Committer:    nowSig,
-			Author:       nowSig,
-			ParentHashes: []plumbing.Hash{}, // before.Hash
-		}
-		commitID, err := gitutil.SaveCommit(r.repo.Storer, wsCommit)
-		if err != nil {
-			return err
-		}
-
-		wsRef = plumbing.NewHashReference(refname, commitID)
-		if err := r.repo.Storer.SetReference(wsRef); err != nil {
-			return err
-		}
+		err = nil
 	} else if err != nil {
 		return err
-	}
-
-	wsCommit, err := r.repo.CommitObject(wsRef.Hash())
-	if err != nil {
-		return err
-	}
-	wsTree, err := r.repo.TreeObject(wsCommit.TreeHash)
-	if err != nil {
-		return err
+	} else {
+		wsCommit, err := r.repo.CommitObject(wsRef.Hash())
+		if err != nil {
+			return err
+		}
+		wsTree, err = r.repo.TreeObject(wsCommit.TreeHash)
+		if err != nil {
+			return err
+		}
 	}
 
 	state := &WorkspaceState{}
@@ -763,7 +757,7 @@ func (r *RepoNode) recordWorkspaceChange(before, after *object.Commit, wsUpdate 
 	}
 
 	entries := []object.TreeEntry{{Name: after.Hash.String(), Hash: wsBlobID}}
-	if wsUpdate.Amend {
+	if wsUpdate.Amend && before != nil {
 		entries = append(entries, object.TreeEntry{
 			Name: before.Hash.String(),
 		})
@@ -774,13 +768,16 @@ func (r *RepoNode) recordWorkspaceChange(before, after *object.Commit, wsUpdate 
 		return err
 	}
 	msg := fmt.Sprintf("update: %s", wsUpdate.Command)
-	wsCommit = &object.Commit{
-		Message:      msg,
-		TreeHash:     afterTreeID,
-		ParentHashes: []plumbing.Hash{wsRef.Hash(), after.Hash},
-		Author:       nowSig,
-		Committer:    nowSig,
+	wsCommit := &object.Commit{
+		Message:   msg,
+		TreeHash:  afterTreeID,
+		Author:    nowSig,
+		Committer: nowSig,
 	}
+	if wsRef != nil {
+		wsCommit.ParentHashes = append(wsCommit.ParentHashes, wsRef.Hash())
+	}
+	wsCommit.ParentHashes = append(wsCommit.ParentHashes, after.Hash)
 	wsCommitID, err := gitutil.SaveCommit(r.repo.Storer, wsCommit)
 	if err != nil {
 		return err
@@ -839,75 +836,118 @@ func (n *RepoNode) SetID(id plumbing.Hash, mode filemode.FileMode, ts time.Time)
 		return err
 	}
 
-	err = n.TreeNode.SetID(commit.TreeHash, mode, ts)
-	n.StoreCommit(commit, ts, &WorkspaceUpdate{
+	// Have to update the commit first, or submodule lookups won't work.
+	if err := n.StoreCommit(commit, ts, &WorkspaceUpdate{
 		Message: "SetID",
-	})
-	return err
+	}); err != nil {
+		return err
+	}
+	return n.TreeNode.SetID(commit.TreeHash, mode, ts)
 }
 
-func NewRoot(cas *CAS, repo *repo.Repository, commit *object.Commit) (*RepoNode, error) {
+func NewRoot(cas *CAS, repo *repo.Repository, workspaceName string) (*RepoNode, error) {
 	root := &RepoNode{
-		repo:   repo,
-		cas:    cas,
-		commit: commit,
-		idTime: time.Now(),
+		workspaceName: workspaceName,
+		repo:          repo,
+		cas:           cas,
+		idTime:        time.Now(),
 	}
 	root.root = root
-	return root, nil
+
+	_, err := repo.Reference(root.workspaceRef(), true)
+	if err == plumbing.ErrReferenceNotFound {
+		if err := root.initializeWorkspace(); err != nil {
+			return nil, err
+		}
+	}
+
+	root.commit, err = root.readWorkspaceCommit()
+	return root, err
 }
 
-func (r *RepoNode) newGitBlobNode(mode filemode.FileMode, id plumbing.Hash) (Node, error) {
-	bn := &BlobNode{
-		root:    r,
-		blobID:  id,
-		mode:    mode,
-		modTime: time.Now(),
+func (r *RepoNode) workspaceRef() plumbing.ReferenceName {
+	return plumbing.ReferenceName("refs/grit/" + r.workspaceName)
+}
+
+func (r *RepoNode) readWorkspaceCommit() (*object.Commit, error) {
+	ref, err := r.repo.Reference(r.workspaceRef(), true)
+	if err != nil {
+		return nil, err
 	}
-	if sz, ok := r.repo.CachedBlobSize(id); !ok {
-		return nil, fmt.Errorf("%s: blob %s has no size", r.repo, id)
-	} else {
-		bn.size = sz
+	commit, err := r.repo.CommitObject(ref.Hash())
+	if err != nil {
+		return nil, err
+	}
+
+	return commit.Parent(commit.NumParents() - 1)
+}
+
+func (r *RepoNode) initializeWorkspace() error {
+	treeID, err := gitutil.SaveTree(r.repo.Storer, nil)
+	if err != nil {
+		return err
+	}
+
+	nowSig := mySig
+	nowSig.When = time.Now()
+	emptyCommit := &object.Commit{
+		Message:   "initial commit",
+		TreeHash:  treeID,
+		Committer: nowSig,
+		Author:    nowSig,
+	}
+	commitID, err := gitutil.SaveCommit(r.repo.Storer, emptyCommit)
+	if err != nil {
+		return err
+	}
+	emptyCommit.Hash = commitID
+	upd := &WorkspaceUpdate{
+		Message: "initialize workspace",
+	}
+	if err := r.recordWorkspaceChange(nil, emptyCommit, upd); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *RepoNode) newGitBlobNode(mode filemode.FileMode) (Node, error) {
+	bn := &BlobNode{
+		root: r,
+		mode: mode,
 	}
 	return bn, nil
 }
 
-func (r *RepoNode) newGitTreeNode(id plumbing.Hash, nodePath string) (Node, error) {
+func (r *RepoNode) newGitTreeNode(nodePath string) (Node, error) {
 	ts := time.Now()
 	treeNode := &TreeNode{
 		root:    r,
 		modTime: ts,
-		treeID:  id,
-		idTime:  ts,
 	}
 
 	return treeNode, nil
 }
 
-func (r *RepoNode) newSubmoduleNode(id plumbing.Hash, path string) (Node, error) {
+func (r *RepoNode) newSubmoduleNode(path string) (Node, error) {
 	subRepo, err := r.repo.SubmoduleByPath(r.commit, path)
 	if err != nil {
 		return nil, err
 	}
-	subCommit, err := subRepo.CommitObject(id)
-	if err != nil {
-		return nil, err
-	}
-	ops, err := NewRoot(r.cas, subRepo, subCommit)
+	ops, err := NewRoot(r.cas, subRepo, r.workspaceName)
 	if err != nil {
 		return nil, err
 	}
 	return ops, nil
 }
 
-func (r *RepoNode) newGitNode(mode filemode.FileMode, id plumbing.Hash, nodePath string) (Node, error) {
+func (r *RepoNode) newGitNode(mode filemode.FileMode, nodePath string) (Node, error) {
 	switch mode {
 	case filemode.Dir:
-		return r.newGitTreeNode(id, nodePath)
+		return r.newGitTreeNode(nodePath)
 	case filemode.Submodule:
-		return r.newSubmoduleNode(id, nodePath)
+		return r.newSubmoduleNode(nodePath)
 	case filemode.Executable, filemode.Regular, filemode.Symlink:
-		return r.newGitBlobNode(mode, id)
+		return r.newGitBlobNode(mode)
 	default:
 		return nil, fmt.Errorf("unsupported mode %v %q", mode, nodePath)
 	}
