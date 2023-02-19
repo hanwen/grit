@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -179,7 +180,7 @@ func amend(ioc *IOClient, root gritfs.Node) error {
 
 	c.Message = strings.Join(lines, "\n")
 
-	return root.GetRepoNode().StoreCommit(&c)
+	return root.GetRepoNode().StoreCommit(&c, time.Now())
 }
 
 func AmendCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
@@ -272,7 +273,7 @@ func commit(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 		c.Message = after
 	}
 
-	if err := repoNode.StoreCommit(&c); err != nil {
+	if err := repoNode.StoreCommit(&c, time.Now()); err != nil {
 		return err
 	}
 
@@ -453,7 +454,7 @@ func CheckoutCommand(args []string, dir string, ioc *IOClient, root gritfs.Node)
 		return 1, nil
 	}
 
-	if err := root.SetID(h, filemode.Dir); err != nil {
+	if err := root.SetID(h, filemode.Dir, time.Now()); err != nil {
 		ioc.Printf("%s\n", err)
 		return 1, nil
 	}
