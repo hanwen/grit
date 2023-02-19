@@ -42,7 +42,7 @@ func usage(fs *flag.FlagSet) func() {
 
 // findRoot finds the repo root (as opposed to the superproject root
 // which is the mountpoint.)
-func findRoot(dir string, root *Root) (*fs.Inode, string, error) {
+func findRoot(dir string, root *gritfs.RepoNode) (*fs.Inode, string, error) {
 	rootInode := root.EmbeddedInode()
 	rootIdx := 0
 
@@ -485,7 +485,8 @@ func Usage(ioc *IOClient) (int, error) {
 	return 0, nil
 }
 
-func RunCommand(args []string, dir string, ioc *IOClient, root *Root) (int, error) {
+func RunCommand(args []string, dir string, iocAPI IOClientAPI, root *gritfs.RepoNode) (int, error) {
+	ioc := &IOClient{iocAPI}
 	if len(args) == 0 {
 		return Usage(ioc)
 	}

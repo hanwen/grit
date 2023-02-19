@@ -41,7 +41,7 @@ func (r *Root) OnAdd(ctx context.Context) {
 	r.AddChild(".grit", ch, true)
 }
 
-func NewCommandServer(cas *gritfs.CAS, repo *repo.Repository, commit *object.Commit) (fs.InodeEmbedder, error) {
+func NewCommandServer(cas *gritfs.CAS, repo *repo.Repository, commit *object.Commit) (*Root, error) {
 	r, err := gritfs.NewRoot(cas, repo, commit)
 	if err != nil {
 		return nil, err
@@ -70,11 +70,11 @@ func NewCommandServer(cas *gritfs.CAS, repo *repo.Repository, commit *object.Com
 func (s *CommandServer) Exec(req *CommandRequest, rep *CommandReply) error {
 	start := time.Now()
 	log.Printf("executing %#v", req)
-	ioc, err := NewIOClient(req.RPCSocket)
+	ioc, err := NewIOClientAPI(req.RPCSocket)
 	if err != nil {
 		return err
 	}
-	exit, err := RunCommand(req.Args, req.Dir, ioc, s.root)
+	exit, err := RunCommand(req.Args, req.Dir, ioc, s.root.RepoNode)
 	rep.ExitCode = exit
 	log.Printf("finished in %v", time.Now().Sub(start))
 	return err
@@ -110,30 +110,39 @@ type EditReply struct {
 }
 
 type IOClient struct {
-	client *rpc.Client
+	IOClientAPI
 }
 
 func (ioc *IOClient) Printf(str string, args ...any) (int, error) {
-	return fmt.Fprintf(ioc, str, args...)
+	return fmt.Fprintf(ioc.IOClientAPI, str, args...)
 }
 
 func (ioc *IOClient) Println(str string, args ...any) (int, error) {
-	return fmt.Fprintf(ioc, str+"\n", args...)
+	return fmt.Fprintf(ioc.IOClientAPI, str+"\n", args...)
 }
 
-func NewIOClient(sock string) (*IOClient, error) {
+func NewIOClientAPI(sock string) (IOClientAPI, error) {
 	client, err := rpc.Dial("unix", sock)
 	if err != nil {
 		return nil, fmt.Errorf("dial(%q): %v", sock, err)
 	}
 
-	ioClient := &IOClient{
+	ioClient := &rpcIOClient{
 		client: client,
 	}
 	return ioClient, nil
 }
 
-func (ioc *IOClient) Edit(name string, data []byte) ([]byte, error) {
+type IOClientAPI interface {
+	Edit(name string, data []byte) ([]byte, error)
+	Write(data []byte) (n int, err error)
+}
+
+type rpcIOClient struct {
+	client *rpc.Client
+}
+
+func (ioc *rpcIOClient) Edit(name string, data []byte) ([]byte, error) {
 	req := EditRequest{Data: data, Name: name}
 	rep := EditReply{}
 
@@ -141,7 +150,7 @@ func (ioc *IOClient) Edit(name string, data []byte) ([]byte, error) {
 	return rep.Data, err
 }
 
-func (ioc *IOClient) Write(data []byte) (n int, err error) {
+func (ioc *rpcIOClient) Write(data []byte) (n int, err error) {
 	req := WriteRequest{
 		Data: data,
 	}
