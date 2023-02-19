@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -137,6 +138,23 @@ type Client struct {
 	capabilities map[string]struct{}
 	fetchCaps    map[string]struct{}
 	lsRefsCaps   map[string]struct{}
+}
+
+func capsAsString(cps map[string]struct{}) string {
+	var keys []string
+	for k := range cps {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
+}
+
+func (cl *Client) String() string {
+	return fmt.Sprintf("client{ URL %q, %s, fetch=[%s], ls-refs=[%s]",
+		cl.url,
+		capsAsString(cl.capabilities),
+		capsAsString(cl.fetchCaps),
+		capsAsString(cl.lsRefsCaps))
 }
 
 func (cl *Client) HasCap(cap string) bool {
