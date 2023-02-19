@@ -5,6 +5,7 @@
 package server
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -22,6 +23,7 @@ import (
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"github.com/hanwen/gritfs/gitutil"
 	"github.com/hanwen/gritfs/gritfs"
+	"github.com/hanwen/gritfs/repo"
 )
 
 func newPathFilter(filter []string) func(s string) bool {
@@ -68,6 +70,84 @@ func findRoot(dir string, root *gritfs.RepoNode) (*fs.Inode, string, error) {
 	}
 
 	return rootInode, strings.Join(components[rootIdx+1:], "/"), nil
+}
+
+func wsLog(gritRepo *repo.Repository, ioc *IOClient) error {
+	ref, err := gritRepo.Reference("refs/grit/ws", true)
+	wsID := ref.Hash()
+	wsCommit, err := gritRepo.CommitObject(wsID)
+	if err != nil {
+		return err
+	}
+	for {
+		if len(wsCommit.ParentHashes) == 0 {
+			break
+		}
+		if len(wsCommit.ParentHashes) != 2 {
+			return fmt.Errorf("workspace commit %v has != 2 parents", wsCommit.Hash)
+		}
+
+		checkedOut, err := wsCommit.Parent(1)
+		if err != nil {
+			return err
+		}
+		tree, err := wsCommit.Tree()
+		if err != nil {
+			return err
+		}
+		f, err := tree.File(checkedOut.Hash.String())
+		if err != nil {
+			return err
+		}
+		status := gritfs.WorkspaceState{}
+		data, err := f.Contents()
+		if err != nil {
+			return err
+		}
+
+		if err := json.Unmarshal([]byte(data), &status); err != nil {
+			return err
+		}
+
+		lines := strings.Split(checkedOut.Message, "\n")
+
+		ioc.Printf("Workspace at commit %s - %s\n", checkedOut.Hash, lines[0])
+		ioc.Printf("  Update %s\n", wsCommit.Message)
+		ioc.Printf("  Status %#v\n", status)
+
+		wsCommit, err = wsCommit.Parent(0)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+
+}
+
+func WSLogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
+	fs := flag.NewFlagSet("wslog", flag.ContinueOnError)
+	fs.Bool("help", false, "show help")
+	fs.SetOutput(ioc)
+	fs.Usage = usage(fs)
+
+	if err := fs.Parse(args); err != nil {
+		return 2, nil // Parse already prints diagnostics.
+	}
+
+	args = fs.Args()
+
+	if len(args) != 0 {
+		fs.Usage()
+		return 2, nil
+	}
+
+	repo := root.GetRepoNode().Repository()
+	if err := wsLog(repo, ioc); err != nil {
+		ioc.Printf("wsLog: %v", err)
+		return 1, nil
+	}
+	return 0, nil
 }
 
 func LogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
@@ -180,7 +260,7 @@ func amend(ioc *IOClient, root gritfs.Node) error {
 
 	c.Message = strings.Join(lines, "\n")
 
-	return root.GetRepoNode().StoreCommit(&c, time.Now())
+	return root.GetRepoNode().StoreCommit(&c, time.Now(), &gritfs.WorkspaceUpdate{Message: "amend"})
 }
 
 func AmendCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
@@ -273,7 +353,8 @@ func commit(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 		c.Message = after
 	}
 
-	if err := repoNode.StoreCommit(&c, time.Now()); err != nil {
+	if err := repoNode.StoreCommit(&c, time.Now(),
+		&gritfs.WorkspaceUpdate{Message: "commit"}); err != nil {
 		return err
 	}
 
@@ -464,6 +545,7 @@ func CheckoutCommand(args []string, dir string, ioc *IOClient, root gritfs.Node)
 
 var dispatch = map[string]func([]string, string, *IOClient, gritfs.Node) (int, error){
 	"log":      LogCommand,
+	"wslog":    WSLogCommand,
 	"amend":    AmendCommand,
 	"ls-tree":  LsTreeCommand,
 	"commit":   CommitCommand,

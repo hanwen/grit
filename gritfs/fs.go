@@ -6,6 +6,7 @@ package gritfs
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -30,7 +31,7 @@ import (
 type Node interface {
 	fs.InodeEmbedder
 
-	idTS() (plumbing.Hash, time.Time, error)
+	idTS(*WorkspaceUpdate) (plumbing.Hash, time.Time, error)
 	ID() (plumbing.Hash, error)
 	DirMode() filemode.FileMode
 	GetRepoNode() *RepoNode
@@ -65,12 +66,17 @@ func (n *BlobNode) GetRepoNode() *RepoNode {
 	return n.root
 }
 
-func (n *BlobNode) idTS() (plumbing.Hash, time.Time, error) {
+func (n *BlobNode) idTS(*WorkspaceUpdate) (plumbing.Hash, time.Time, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	return n.blobID, n.modTime, nil
 }
 
 func (n *BlobNode) ID() (plumbing.Hash, error) {
-	id, _, err := n.idTS()
+	upd := &WorkspaceUpdate{
+		Message: "ID call",
+	}
+	id, _, err := n.idTS(upd)
 	return id, err
 }
 
@@ -483,11 +489,14 @@ func (n *TreeNode) TreeEntries() ([]object.TreeEntry, error) {
 }
 
 func (n *TreeNode) ID() (id plumbing.Hash, err error) {
-	id, _, err = n.idTS()
+	upd := &WorkspaceUpdate{
+		Message: "ID",
+	}
+	id, _, err = n.idTS(upd)
 	return id, err
 }
 
-func (n *TreeNode) idTS() (id plumbing.Hash, idTime time.Time, err error) {
+func (n *TreeNode) idTS(wsUpdate *WorkspaceUpdate) (id plumbing.Hash, idTime time.Time, err error) {
 	startTS := time.Now()
 	children := n.Children()
 
@@ -500,7 +509,7 @@ func (n *TreeNode) idTS() (id plumbing.Hash, idTime time.Time, err error) {
 			continue
 		}
 
-		id, idTS, err := ops.idTS()
+		id, idTS, err := ops.idTS(wsUpdate)
 		if err != nil {
 			return id, idTime, err
 		}
@@ -667,12 +676,8 @@ func (r *RepoNode) GetCommit() object.Commit {
 	return *r.commit
 }
 
-func (r *RepoNode) StoreCommit(c *object.Commit, startTS time.Time) error {
-	var before plumbing.Hash
-
-	if r.commit != nil {
-		before = c.Hash
-	}
+func (r *RepoNode) StoreCommit(c *object.Commit, startTS time.Time, wsUpdate *WorkspaceUpdate) error {
+	before := r.commit
 
 	commitID, err := gitutil.SaveCommit(r.repo.Storer, c)
 	// decode the object again so it has a Storer reference.
@@ -682,20 +687,117 @@ func (r *RepoNode) StoreCommit(c *object.Commit, startTS time.Time) error {
 	}
 
 	log.Printf("%s: new commit %v for tree %v", r.Path(nil), c.Hash, c.TreeHash)
-	if commitID != before {
+	if before == nil || commitID != before.Hash {
 		r.commit = c
 		r.idTime = startTS
+
+		if err := r.recordWorkspaceChange(before, c, wsUpdate); err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
+type WorkspaceState struct {
+	Conflict bool
+}
+
+type WorkspaceUpdate struct {
+	Message string
+	Command []string
+	Amend   bool
+
+	NewState WorkspaceState
+}
+
+func (r *RepoNode) recordWorkspaceChange(before, after *object.Commit, wsUpdate *WorkspaceUpdate) error {
+	nowSig := mySig
+	nowSig.When = time.Now()
+
+	refname := plumbing.ReferenceName("refs/grit/ws")
+	wsRef, err := r.repo.Reference(refname, true)
+	if err == plumbing.ErrReferenceNotFound {
+		treeID, err := gitutil.SaveTree(r.repo.Storer, nil)
+		if err != nil {
+			return err
+		}
+
+		wsCommit := &object.Commit{
+			Message:      "initial workspace",
+			TreeHash:     treeID,
+			Committer:    nowSig,
+			Author:       nowSig,
+			ParentHashes: []plumbing.Hash{}, // before.Hash
+		}
+		commitID, err := gitutil.SaveCommit(r.repo.Storer, wsCommit)
+		if err != nil {
+			return err
+		}
+
+		wsRef = plumbing.NewHashReference(refname, commitID)
+		if err := r.repo.Storer.SetReference(wsRef); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+
+	wsCommit, err := r.repo.CommitObject(wsRef.Hash())
+	if err != nil {
+		return err
+	}
+	wsTree, err := r.repo.TreeObject(wsCommit.TreeHash)
+	if err != nil {
+		return err
+	}
+
+	state := &WorkspaceState{}
+	wsBlob, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	wsBlobID, err := gitutil.SaveBlob(r.repo.Storer, wsBlob)
+	if err != nil {
+		return err
+	}
+
+	entries := []object.TreeEntry{{Name: after.Hash.String(), Hash: wsBlobID}}
+	if wsUpdate.Amend {
+		entries = append(entries, object.TreeEntry{
+			Name: before.Hash.String(),
+		})
+	}
+
+	afterTreeID, err := gitutil.PatchTree(r.repo.Storer, wsTree, entries)
+	if err != nil {
+		return err
+	}
+	msg := fmt.Sprintf("update: %s", wsUpdate.Command)
+	wsCommit = &object.Commit{
+		Message:      msg,
+		TreeHash:     afterTreeID,
+		ParentHashes: []plumbing.Hash{wsRef.Hash(), after.Hash},
+		Author:       nowSig,
+		Committer:    nowSig,
+	}
+	wsCommitID, err := gitutil.SaveCommit(r.repo.Storer, wsCommit)
+	if err != nil {
+		return err
+	}
+	wsRef = plumbing.NewHashReference(refname, wsCommitID)
+	if err := r.repo.Storer.SetReference(wsRef); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (r *RepoNode) ID() (plumbing.Hash, error) {
-	id, _, err := r.idTS()
+	id, _, err := r.idTS(&WorkspaceUpdate{Message: "ID call"})
 	return id, err
 }
 
-func (r *RepoNode) idTS() (plumbing.Hash, time.Time, error) {
+func (r *RepoNode) idTS(wsUpdate *WorkspaceUpdate) (plumbing.Hash, time.Time, error) {
 	startTS := time.Now()
 
 	lastTree := r.commit.TreeHash
@@ -723,7 +825,9 @@ func (r *RepoNode) idTS() (plumbing.Hash, time.Time, error) {
 				ParentHashes: []plumbing.Hash{r.commit.Hash},
 			}
 		}
-		r.StoreCommit(&c, startTS)
+		if err := r.StoreCommit(&c, startTS, wsUpdate); err != nil {
+			return plumbing.ZeroHash, time.Time{}, err
+		}
 	}
 
 	return r.commit.Hash, r.idTime, nil
@@ -736,7 +840,9 @@ func (n *RepoNode) SetID(id plumbing.Hash, mode filemode.FileMode, ts time.Time)
 	}
 
 	err = n.TreeNode.SetID(commit.TreeHash, mode, ts)
-	n.StoreCommit(commit, ts)
+	n.StoreCommit(commit, ts, &WorkspaceUpdate{
+		Message: "SetID",
+	})
 	return err
 }
 

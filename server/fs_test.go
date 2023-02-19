@@ -130,4 +130,15 @@ func TestFS(t *testing.T) {
 	if exit != 0 || err != nil {
 		t.Errorf("exit %d, %v", exit, err)
 	}
+
+	if _, err := gritRepo.Reference("refs/grit/ws", true); err != nil {
+		t.Fatal(err)
+	}
+
+	ioc = &testIOC{}
+	exit, err = RunCommand([]string{"checkout", tr.CommitID.String()}, "", ioc, root.RepoNode)
+	if exit != 0 || err != nil {
+		t.Errorf("exit %d, %v", exit, err)
+	}
+
 }
