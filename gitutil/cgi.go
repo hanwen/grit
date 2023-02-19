@@ -58,6 +58,17 @@ func SetupTestRepo(dir string, fileContents map[string]string) (*TestRepo, error
 		return nil, err
 	}
 
+	cfg, err := tr.Repo.Config()
+	if err != nil {
+		return nil, err
+	}
+	cfg.Raw.AddOption("uploadpack", "", "allowfilter", "1")
+	cfg.Raw.AddOption("uploadpack", "", "allowanysha1inwant", "1")
+	tr.Repo.SetConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	var es []object.TreeEntry
 	for k, v := range fileContents {
 		id, err := SaveBlob(tr.Repo.Storer, []byte(v))

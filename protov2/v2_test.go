@@ -37,7 +37,6 @@ func TestObjectInfo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	blobID := tr.FileIDs["file"]
 	res, err := cl.ObjectInfo([]plumbing.Hash{blobID})
 	if err != nil {
@@ -55,9 +54,8 @@ func TestObjectInfo(t *testing.T) {
 	}
 
 	opts := FetchOptions{
-		Want: []plumbing.Hash{tr.CommitID},
-		// ? doesnt work?
-		//		Filter: "blob:limit=1024",
+		Want:   []plumbing.Hash{tr.CommitID},
+		Filter: "blob:limit=1024",
 	}
 	if err := cl.Fetch(destRepo.Storer, &opts); err != nil {
 		t.Fatal(err)
@@ -66,6 +64,10 @@ func TestObjectInfo(t *testing.T) {
 	medBlobID := tr.FileIDs["h"]
 	if _, err := destRepo.BlobObject(medBlobID); err != nil {
 		t.Fatal(err)
+	}
+	largeBlobID := tr.FileIDs["g"]
+	if _, err := destRepo.BlobObject(largeBlobID); err == nil {
+		t.Fatalf("found %v, want ErrNotFound", largeBlobID)
 	}
 	if _, err := destRepo.TreeObject(tr.TreeID); err != nil {
 		t.Fatal(err)
