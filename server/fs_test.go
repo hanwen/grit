@@ -95,24 +95,16 @@ func TestFS(t *testing.T) {
 		}
 	}
 
-	ioc = &testIOC{}
+	for i := 0; i < 2; i++ {
+		ioc = &testIOC{}
+		exit, err = RunCommand([]string{"log", "-n", "1"}, "", ioc, root.RepoNode)
+		if exit != 0 || err != nil {
+			t.Errorf("exit %d, %v", exit, err)
+		}
 
-	exit, err = RunCommand([]string{"log"}, "", ioc, root.RepoNode)
-	if exit != 0 || err != nil {
-		t.Errorf("exit %d, %v", exit, err)
-	}
-	if got, want := ioc.String(), tr.CommitID.String(); !strings.Contains(got, want) {
-		t.Errorf("got %q, want %q", got, want)
-	}
-
-	ioc = &testIOC{}
-	exit, err = RunCommand([]string{"log", "-n", "1"}, "", ioc, root.RepoNode)
-	if exit != 0 || err != nil {
-		t.Errorf("exit %d, %v", exit, err)
-	}
-
-	if got, want := ioc.String(), "commit "+tr.CommitID.String(); !strings.Contains(got, want) {
-		t.Errorf("got %q, want %q", got, want)
+		if got, want := ioc.String(), "commit "+tr.CommitID.String(); !strings.Contains(got, want) {
+			t.Errorf("got %q, want %q", got, want)
+		}
 	}
 
 	// try a write, hopefully triggering parallelism.
