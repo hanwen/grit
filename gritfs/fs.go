@@ -387,6 +387,13 @@ func (n *TreeNode) FitsMode(mode filemode.FileMode) bool {
 }
 
 func (n *TreeNode) SetID(id plumbing.Hash, mode filemode.FileMode, ts time.Time) error {
+	n.mu.Lock()
+	tid := n.treeID
+	n.mu.Unlock()
+	if tid == id {
+		return nil
+	}
+
 	tree, err := n.root.repo.TreeObject(id)
 	if err != nil {
 		return err
@@ -816,6 +823,9 @@ func (r *RepoNode) idTS(wsUpdate *WorkspaceUpdate) (plumbing.Hash, time.Time, er
 }
 
 func (n *RepoNode) SetID(id plumbing.Hash, mode filemode.FileMode, ts time.Time) error {
+	if n.commit.Hash == id {
+		return nil
+	}
 	commit, err := n.repo.CommitObject(id)
 	if err != nil {
 		return err
