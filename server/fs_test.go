@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -118,10 +119,33 @@ func TestFS(t *testing.T) {
 		t.Errorf("exit %d, %v", exit, err)
 	}
 
-	if ref, err := gritRepo.Reference("refs/grit/ws", true); err != nil {
+	update := &gritfs.WorkspaceUpdate{
+		Message:  "bla",
+		NewState: gritfs.WorkspaceState{AutoSnapshot: true},
+	}
+	savedCommit, _, err := root.RepoNode.Snapshot(update)
+	if err != nil {
 		t.Fatal(err)
-	} else {
-		log.Println(ref)
 	}
 
+	commit, readState, err := root.RepoNode.ReadWorkspaceCommit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commit.Hash != savedCommit.Hash {
+		t.Errorf("got %v want %v", commit, savedCommit)
+	}
+
+	parent, err := commit.Parent(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := parent.Hash, tr.CommitID; got != want {
+		t.Fatalf("got %s want %s", parent, want)
+	}
+
+	if !reflect.DeepEqual(&update.NewState, readState) {
+		t.Fatalf("got %v want %v", readState, &update.NewState)
+	}
 }
