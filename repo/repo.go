@@ -31,6 +31,7 @@ type Repository struct {
 	repoURL   *url.URL
 	gitClient *protov2.Client
 
+	mu              sync.Mutex
 	submoduleConfig *config.Modules
 	submodules      map[string]*Repository
 	sizes           map[plumbing.Hash]uint64
@@ -45,11 +46,15 @@ func (r *Repository) SetDebug(dbg bool) {
 }
 
 func (r *Repository) CachedBlobSize(id plumbing.Hash) (uint64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	sz, ok := r.sizes[id]
 	return sz, ok
 }
 
 func (r *Repository) getSubmoduleConfig(commit *object.Commit) (*config.Modules, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.submoduleConfig != nil {
 		return r.submoduleConfig, nil
 	}
@@ -91,6 +96,7 @@ func (r *Repository) getSubmoduleConfig(commit *object.Commit) (*config.Modules,
 		return nil, err
 	}
 
+	r.submoduleConfig = mods
 	r.submodules = make(map[string]*Repository)
 	return mods, nil
 }
@@ -111,14 +117,17 @@ func (r *Repository) SubmoduleByPath(commit *object.Commit, path string) (*Repos
 }
 
 func (r *Repository) Submodule(commit *object.Commit, name string) (*Repository, error) {
-	if r := r.submodules[name]; r != nil {
-		return r, nil
-	}
-
 	cfg, err := r.getSubmoduleConfig(commit)
 	if err != nil {
 		return nil, err
 	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r := r.submodules[name]; r != nil {
+		return r, nil
+	}
+
 	submod := cfg.Submodules[name]
 	if submod == nil {
 		return nil, fmt.Errorf("submodule %q not found", name)
