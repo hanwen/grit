@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -629,57 +628,26 @@ func (n *RepoNode) FitsMode(mode filemode.FileMode) bool {
 	return mode == filemode.Submodule
 }
 
-func IsGritCommit(c *object.Commit) bool {
-	idx := strings.LastIndex(c.Message, "\n\n")
-	if idx == -1 {
-		return false
-	}
-
-	return strings.Contains(c.Message[idx:], "\nGrit-Amends: ")
-}
-
-func SetGritCommit(msg string, h plumbing.Hash) string {
-	footerIdx := strings.LastIndex(msg, "\n\n")
-	var lines []string
-	body := msg
-	if footerIdx > 0 {
-		lines = strings.Split(msg[footerIdx+2:], "\n")
-		body = msg[:footerIdx]
-	}
-	newLine := "Grit-Amends: " + h.String()
-	if h == plumbing.ZeroHash {
-		newLine = ""
-	}
-	seen := false
-
-	var newLines []string
-	for _, line := range lines {
-		if strings.HasPrefix(line, "Grit-Amends: ") {
-			line = newLine
-			seen = true
-		}
-		if line == "" {
-			continue
-		}
-		newLines = append(newLines, line)
-	}
-	if !seen {
-		newLines = append(newLines, newLine)
-	}
-	return body + "\n\n" + strings.Join(newLines, "\n") + "\n"
-}
-
 func (r *RepoNode) DirMode() filemode.FileMode {
 	return filemode.Submodule
 }
 
 var mySig object.Signature
+var sysSig object.Signature
 
 func init() {
 	u, _ := user.Current()
 
 	mySig.Name = u.Name
 	mySig.Email = fmt.Sprintf("%s@localhost", u.Username)
+
+	hn, err := os.Hostname()
+	if err != nil {
+		hn = "localhost.localdomain"
+	}
+
+	sysSig.Name = "Grit daemon"
+	sysSig.Email = "grit+noreply" + hn
 }
 
 // Returns the commit currently stored in the repo node; does not
@@ -698,8 +666,9 @@ func (r *RepoNode) StoreCommit(c *object.Commit, startTS time.Time, wsUpdate *Wo
 		return err
 	}
 
-	log.Printf("%s: new commit %v for tree %v", r.Path(nil), c.Hash, c.TreeHash)
 	if before == nil || commitID != before.Hash {
+		log.Printf("%s: new commit %v for tree %v", r.Path(nil), c.Hash, c.TreeHash)
+
 		r.commit = c
 		r.idTime = startTS
 
@@ -712,14 +681,12 @@ func (r *RepoNode) StoreCommit(c *object.Commit, startTS time.Time, wsUpdate *Wo
 }
 
 type WorkspaceState struct {
-	Conflict bool
+	AutoSnapshot bool
 }
 
 type WorkspaceUpdate struct {
-	Message string
-	Command []string
-	Amend   bool
-
+	Message  string
+	Amend    bool
 	NewState WorkspaceState
 }
 
@@ -746,8 +713,7 @@ func (r *RepoNode) recordWorkspaceChange(before, after *object.Commit, wsUpdate 
 		}
 	}
 
-	state := &WorkspaceState{}
-	wsBlob, err := json.Marshal(state)
+	wsBlob, err := json.Marshal(&wsUpdate.NewState)
 	if err != nil {
 		return err
 	}
@@ -767,12 +733,14 @@ func (r *RepoNode) recordWorkspaceChange(before, after *object.Commit, wsUpdate 
 	if err != nil {
 		return err
 	}
-	msg := fmt.Sprintf("update: %s", wsUpdate.Command)
+
+	nowSysSig := sysSig
+	nowSysSig.When = time.Now()
 	wsCommit := &object.Commit{
-		Message:   msg,
+		Message:   wsUpdate.Message, // TODO - should serialize wsUpdate to json?
 		TreeHash:  afterTreeID,
-		Author:    nowSig,
-		Committer: nowSig,
+		Author:    nowSysSig,
+		Committer: nowSysSig,
 	}
 	if wsRef != nil {
 		wsCommit.ParentHashes = append(wsCommit.ParentHashes, wsRef.Hash())
@@ -790,12 +758,26 @@ func (r *RepoNode) recordWorkspaceChange(before, after *object.Commit, wsUpdate 
 }
 
 func (r *RepoNode) ID() (plumbing.Hash, error) {
-	id, _, err := r.idTS(&WorkspaceUpdate{Message: "ID call"})
+	id, _, err := r.idTS(nil)
 	return id, err
 }
 
 func (r *RepoNode) idTS(wsUpdate *WorkspaceUpdate) (plumbing.Hash, time.Time, error) {
 	startTS := time.Now()
+
+	_, prevState, err := r.ReadWorkspaceCommit()
+	if wsUpdate == nil {
+		wsUpdate = &WorkspaceUpdate{
+			Message: "Snapshot",
+			NewState: WorkspaceState{
+				AutoSnapshot: true,
+			},
+		}
+
+		if prevState.AutoSnapshot {
+			wsUpdate.Amend = true
+		}
+	}
 
 	lastTree := r.commit.TreeHash
 	treeID, err := r.TreeNode.ID()
@@ -806,22 +788,25 @@ func (r *RepoNode) idTS(wsUpdate *WorkspaceUpdate) (plumbing.Hash, time.Time, er
 
 	if lastTree != treeID {
 		c := *r.commit
-		if IsGritCommit(r.commit) {
-			// amend commit
-			c.TreeHash = treeID
-			c.Message = SetGritCommit(r.commit.Message, r.commit.Hash)
-		} else {
+
+		if wsUpdate.NewState.AutoSnapshot {
 			mySig.When = time.Now()
 			ts := time.Now().Format(time.RFC822Z)
 			c = object.Commit{
-				Message: SetGritCommit(fmt.Sprintf(
-					`Snapshot originally created %v for tree %v`, ts, treeID), r.commit.Hash),
-				Author:       mySig,
-				Committer:    mySig,
-				TreeHash:     treeID,
-				ParentHashes: []plumbing.Hash{r.commit.Hash},
+				Message: fmt.Sprintf(
+					`Snapshot created %v for tree %v`, ts, treeID),
+				Author:    mySig,
+				Committer: mySig,
+				TreeHash:  treeID,
 			}
 		}
+
+		if wsUpdate.Amend {
+			c.ParentHashes = r.commit.ParentHashes
+		} else {
+			c.ParentHashes = []plumbing.Hash{r.commit.Hash}
+		}
+
 		if err := r.StoreCommit(&c, startTS, wsUpdate); err != nil {
 			return plumbing.ZeroHash, time.Time{}, err
 		}
@@ -845,6 +830,14 @@ func (n *RepoNode) SetID(id plumbing.Hash, mode filemode.FileMode, ts time.Time)
 	return n.TreeNode.SetID(commit.TreeHash, mode, ts)
 }
 
+func (n *RepoNode) Snapshot(upd *WorkspaceUpdate) (*object.Commit, *WorkspaceState, error) {
+	_, _, err := n.idTS(upd)
+	if err != nil {
+		return nil, nil, err
+	}
+	return n.ReadWorkspaceCommit()
+}
+
 func NewRoot(cas *CAS, repo *repo.Repository, workspaceName string) (*RepoNode, error) {
 	root := &RepoNode{
 		workspaceName: workspaceName,
@@ -861,7 +854,7 @@ func NewRoot(cas *CAS, repo *repo.Repository, workspaceName string) (*RepoNode, 
 		}
 	}
 
-	root.commit, err = root.readWorkspaceCommit()
+	root.commit, _, err = root.ReadWorkspaceCommit()
 	return root, err
 }
 
@@ -869,17 +862,37 @@ func (r *RepoNode) workspaceRef() plumbing.ReferenceName {
 	return plumbing.ReferenceName("refs/grit/" + r.workspaceName)
 }
 
-func (r *RepoNode) readWorkspaceCommit() (*object.Commit, error) {
+// Reads the workspace state from storage
+func (r *RepoNode) ReadWorkspaceCommit() (commit *object.Commit, state *WorkspaceState, err error) {
 	ref, err := r.repo.Reference(r.workspaceRef(), true)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	commit, err := r.repo.CommitObject(ref.Hash())
+	wsCommit, err := r.repo.CommitObject(ref.Hash())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return commit.Parent(commit.NumParents() - 1)
+	commit, err = wsCommit.Parent(wsCommit.NumParents() - 1)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	f, err := wsCommit.File(commit.Hash.String())
+	if err != nil {
+		return nil, nil, err
+	}
+	state = &WorkspaceState{}
+	contents, err := f.Contents()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if err := json.Unmarshal([]byte(contents), state); err != nil {
+		return nil, nil, err
+	}
+
+	return commit, state, nil
 }
 
 func (r *RepoNode) initializeWorkspace() error {

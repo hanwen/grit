@@ -72,7 +72,9 @@ func findRoot(dir string, root *gritfs.RepoNode) (*fs.Inode, string, error) {
 	return rootInode, strings.Join(components[rootIdx+1:], "/"), nil
 }
 
-func wsLog(gritRepo *repo.Repository, ioc *IOClient, wsname string) error {
+const DateTime = "2006-01-02 15:04:05"
+
+func wsLog(gritRepo *repo.Repository, ioc *IOClient, wsname string, maxEntry int) error {
 	ref, err := gritRepo.Reference(plumbing.ReferenceName("refs/grit/"+wsname), true)
 	wsID := ref.Hash()
 	wsCommit, err := gritRepo.CommitObject(wsID)
@@ -104,9 +106,9 @@ func wsLog(gritRepo *repo.Repository, ioc *IOClient, wsname string) error {
 
 		lines := strings.Split(checkedOut.Message, "\n")
 
-		ioc.Printf("Workspace at commit %s - %s\n", checkedOut.Hash, lines[0])
-		ioc.Printf("  Update %s\n", wsCommit.Message)
-		ioc.Printf("  Status %#v\n", status)
+		ioc.Printf("%s at commit %s - %s\n", wsCommit.Committer.When.Format(DateTime), checkedOut.Hash, lines[0])
+		ioc.Printf("  Reason: %s\n", wsCommit.Message)
+		ioc.Printf("  Status: %#v\n", status)
 
 		if wsCommit.NumParents() == 1 {
 			break
@@ -115,6 +117,13 @@ func wsLog(gritRepo *repo.Repository, ioc *IOClient, wsname string) error {
 		wsCommit, err = wsCommit.Parent(0)
 		if err != nil {
 			return err
+		}
+
+		if maxEntry > 0 {
+			maxEntry--
+			if maxEntry == 0 {
+				break
+			}
 		}
 	}
 
@@ -125,6 +134,7 @@ func wsLog(gritRepo *repo.Repository, ioc *IOClient, wsname string) error {
 func WSLogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
 	fs := flag.NewFlagSet("wslog", flag.ContinueOnError)
 	fs.Bool("help", false, "show help")
+	maxEntry := fs.Int("n", 0, "maximum number of entries to show")
 	fs.SetOutput(ioc)
 	fs.Usage = usage(fs)
 
@@ -141,7 +151,7 @@ func WSLogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (i
 
 	repoNode := root.GetRepoNode()
 	repo := repoNode.Repository()
-	if err := wsLog(repo, ioc, repoNode.WorkspaceName()); err != nil {
+	if err := wsLog(repo, ioc, repoNode.WorkspaceName(), *maxEntry); err != nil {
 		ioc.Printf("wsLog: %v", err)
 		return 1, nil
 	}
@@ -186,7 +196,8 @@ func LogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int
 		opts.PathFilter = newPathFilter(filtered)
 	}
 
-	iter, err := root.GetRepoNode().Repository().Log(opts)
+	repo := root.GetRepoNode().Repository()
+	iter, err := repo.Log(opts)
 	if err != nil {
 		ioc.Println("Log(%v): %v\n", opts, err)
 		return 1, nil
@@ -196,10 +207,26 @@ func LogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int
 		_, err := ioc.Println("%v", c)
 
 		if *patch {
-			parent, err := c.Parent(0)
-			if err == object.ErrParentNotFound {
-				err = nil
-				parent = nil
+			parent := &object.Commit{}
+			if c.NumParents() > 0 {
+				parent, err = c.Parent(0)
+				if err == object.ErrParentNotFound {
+					err = nil
+					parent = nil
+				}
+			} else {
+				parent.TreeHash, err = gitutil.SaveTree(repo.Storer, nil)
+				if err != nil {
+					return err
+				}
+				emptyID, err := gitutil.SaveCommit(repo.Storer, parent)
+				if err != nil {
+					return err
+				}
+				parent, err = repo.CommitObject(emptyID)
+				if err != nil {
+					return err
+				}
 			}
 
 			if err != nil {
@@ -208,6 +235,7 @@ func LogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int
 
 			p, err := parent.Patch(c)
 			if err != nil {
+				log.Println("patch", parent, c, err)
 				return err
 			}
 
@@ -271,10 +299,20 @@ func AmendCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (i
 
 func commit(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 	repoNode := root.GetRepoNode()
-	repoNode.ID() // trigger recomputation.
-	c := repoNode.GetCommit()
-	if !gritfs.IsGritCommit(&c) {
-		ioc.Println("no pending work to commit.")
+
+	wsUpdate := gritfs.WorkspaceUpdate{
+		Message: "before commit command",
+		NewState: gritfs.WorkspaceState{
+			AutoSnapshot: true,
+		},
+	}
+	commit, wsState, err := repoNode.Snapshot(&wsUpdate)
+	if err != nil {
+		return err
+	}
+
+	if !wsState.AutoSnapshot {
+		ioc.Printf("No pending files; top commit is %s - %s", commit.Hash, gitutil.Subject(commit))
 		return nil
 	}
 
@@ -287,7 +325,7 @@ func commit(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 		return nil // Parse already prints diagnostics.
 	}
 
-	parent, err := c.Parent(0)
+	parent, err := commit.Parent(0)
 	if err != nil {
 		return err
 	}
@@ -312,18 +350,18 @@ func commit(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 			}
 		}
 
-		prevTree, err := repoNode.Repository().TreeObject(parent.TreeHash)
+		prevTree, err := parent.Tree()
 		if err != nil {
 			return err
 		}
 		id, err := gitutil.PatchTree(repoNode.Repository().Storer, prevTree, changes)
-		c.TreeHash = id
+		commit.TreeHash = id
 	}
 
 	if *msg != "" {
-		c.Message = *msg
+		commit.Message = *msg
 	} else {
-		stats, err := c.Stats()
+		stats, err := commit.Stats()
 		if err != nil {
 			return err
 		}
@@ -336,7 +374,7 @@ func commit(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 		}
 		msg += "#\n# Provide a commit message:\n\n"
 
-		before := strings.TrimSpace(gritfs.SetGritCommit(c.Message, plumbing.ZeroHash))
+		before := strings.TrimSpace(commit.Message)
 		msg += before
 
 		data, err := ioc.Edit("commit-message", []byte(msg))
@@ -348,17 +386,40 @@ func commit(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 		if before == after {
 			return fmt.Errorf("must provide a message")
 		}
-		c.Message = after
+		commit.Message = after
 	}
 
-	if err := repoNode.StoreCommit(&c, time.Now(),
+	if err := repoNode.StoreCommit(commit, time.Now(),
 		&gritfs.WorkspaceUpdate{Message: "commit"}); err != nil {
 		return err
 	}
 
-	// If other files were still changed, a new snapshot is generated automatically.
+	// If other files were still changed, generate a new snapshot
+	wsUpdate = gritfs.WorkspaceUpdate{
+		Message: "after commit command",
+		NewState: gritfs.WorkspaceState{
+			AutoSnapshot: true,
+		},
+	}
+	if _, _, err := repoNode.Snapshot(&wsUpdate); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func SnapshotCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
+	wsUpdate := gritfs.WorkspaceUpdate{
+		Message: "snapshot command",
+		NewState: gritfs.WorkspaceState{
+			AutoSnapshot: true,
+		},
+	}
+	if _, _, err := root.GetRepoNode().Snapshot(&wsUpdate); err != nil {
+		ioc.Printf("Snapshot: %v", err)
+		return 1, nil
+	}
+	return 0, nil
 }
 
 func CommitCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
@@ -549,6 +610,7 @@ var dispatch = map[string]func([]string, string, *IOClient, gritfs.Node) (int, e
 	"commit":   CommitCommand,
 	"find":     FindCommand,
 	"checkout": CheckoutCommand,
+	"snapshot": SnapshotCommand,
 }
 
 func Usage(ioc *IOClient) (int, error) {
