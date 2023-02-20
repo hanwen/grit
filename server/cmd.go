@@ -5,6 +5,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	iofs "io/fs"
@@ -118,6 +119,22 @@ func (ioc *IOClient) Printf(str string, args ...any) (int, error) {
 
 func (ioc *IOClient) Println(str string, args ...any) (int, error) {
 	return fmt.Fprintf(ioc.IOClientAPI, str+"\n", args...)
+}
+
+func (ioc *IOClient) Edit(name string, data []byte) ([]byte, error) {
+	ret, err := ioc.IOClientAPI.Edit(name, data)
+
+	trimmed := make([]byte, 0, len(ret))
+	for _, l := range bytes.Split(ret, []byte("\n")) {
+		if len(l) > 0 && l[0] == '#' {
+			continue
+		}
+
+		trimmed = append(trimmed, l...)
+		trimmed = append(trimmed, '\n')
+	}
+
+	return trimmed, err
 }
 
 func NewIOClientAPI(sock string) (IOClientAPI, error) {
