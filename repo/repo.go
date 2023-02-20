@@ -33,7 +33,6 @@ type Repository struct {
 
 	mu              sync.Mutex
 	submoduleConfig *config.Modules
-	submodules      map[string]*Repository
 	sizes           map[plumbing.Hash]uint64
 }
 
@@ -122,12 +121,6 @@ func (r *Repository) Submodule(commit *object.Commit, name string) (*Repository,
 		return nil, err
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r := r.submodules[name]; r != nil {
-		return r, nil
-	}
-
 	submod := cfg.Submodules[name]
 	if submod == nil {
 		return nil, fmt.Errorf("submodule %q not found", name)
@@ -155,7 +148,6 @@ func (r *Repository) Submodule(commit *object.Commit, name string) (*Repository,
 	if err != nil {
 		return nil, err
 	}
-	r.submodules[name] = sr
 	return sr, nil
 }
 
