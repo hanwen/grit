@@ -1,11 +1,13 @@
 package gitutil
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/http/cgi"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	git "github.com/go-git/go-git/v5"
@@ -43,9 +45,16 @@ func ServeGit(root string, l net.Listener) {
 
 type TestRepo struct {
 	Repo     *git.Repository
+	Listener net.Listener
+	RepoURL  string
+
 	FileIDs  map[string]plumbing.Hash
 	TreeID   plumbing.Hash
 	CommitID plumbing.Hash
+}
+
+func (tr *TestRepo) Close() {
+	tr.Listener.Close()
 }
 
 // TestMapToEntries provides input to PatchTree. keys are filenames, with
@@ -76,13 +85,13 @@ func TestMapToEntries(st storer.EncodedObjectStorer, in map[string]string) ([]ob
 	return es, nil
 }
 
-func SetupTestRepo(dir string, fileContents map[string]string) (*TestRepo, error) {
+func SetupTestRepo(root, name string, fileContents map[string]string) (*TestRepo, error) {
 	tr := &TestRepo{
 		FileIDs: map[string]plumbing.Hash{},
 	}
 
 	var err error
-	tr.Repo, err = git.PlainInit(dir, true)
+	tr.Repo, err = git.PlainInit(filepath.Join(root, name), true)
 	if err != nil {
 		return nil, err
 	}
@@ -124,6 +133,15 @@ func SetupTestRepo(dir string, fileContents map[string]string) (*TestRepo, error
 	if err := tr.Repo.Storer.SetReference(ref); err != nil {
 		return nil, err
 	}
+
+	tr.Listener, err = net.Listen("tcp", "localhost:0")
+	if err != nil {
+		return nil, err
+	}
+
+	ServeGit(root, tr.Listener)
+
+	tr.RepoURL = fmt.Sprintf("http://%s/%s", tr.Listener.Addr(), name)
 
 	return tr, nil
 }

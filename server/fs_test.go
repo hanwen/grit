@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -30,23 +29,17 @@ func (t *testIOC) Edit(name string, data []byte) ([]byte, error) {
 
 func TestFS(t *testing.T) {
 	srcRoot := t.TempDir()
-	srcRepoDir := srcRoot + "/repo"
 
 	input := map[string]string{"a": "hello world",
 		"b/c":   "xyz",
 		"b/d":   "pqr",
 		"large": strings.Repeat("x", 20000),
 	}
-	tr, err := gitutil.SetupTestRepo(srcRepoDir, input)
+	tr, err := gitutil.SetupTestRepo(srcRoot, "repo", input)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	l, err := net.Listen("tcp", "localhost:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	go gitutil.ServeGit(srcRoot, l)
 	casDir := t.TempDir()
 	cas, err := gritfs.NewCAS(casDir)
 	if err != nil {
@@ -58,7 +51,7 @@ func TestFS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repoURL, err := url.Parse(fmt.Sprintf("http://%s/repo", l.Addr()))
+	repoURL, _ := url.Parse(tr.RepoURL)
 	if err != nil {
 		t.Fatal(err)
 	}

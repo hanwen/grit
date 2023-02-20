@@ -1,8 +1,6 @@
 package protov2
 
 import (
-	"fmt"
-	"net"
 	"strings"
 	"testing"
 
@@ -14,26 +12,16 @@ import (
 func TestObjectInfo(t *testing.T) {
 	tmp := t.TempDir()
 
-	repoDir := tmp + "/repo"
-
 	content := "hello world"
-	tr, err := gitutil.SetupTestRepo(repoDir,
+	tr, err := gitutil.SetupTestRepo(tmp, "repo",
 		map[string]string{
 			"file": content,
 			"g":    strings.Repeat("x", 1025),
 			"h":    strings.Repeat("x", 1023),
 		})
+	t.Cleanup(tr.Close)
 
-	l, err := net.Listen("tcp", "localhost:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	gitutil.ServeGit(tmp, l)
-
-	addr := fmt.Sprintf("http://%s/repo", l.Addr())
-
-	cl, err := NewClient(addr)
+	cl, err := NewClient(tr.RepoURL)
 	if err != nil {
 		t.Fatal(err)
 	}
