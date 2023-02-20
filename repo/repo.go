@@ -54,15 +54,29 @@ func (r *Repository) getSubmoduleConfig(commit *object.Commit) (*config.Modules,
 		return r.submoduleConfig, nil
 	}
 
-	f, err := commit.File(".gitmodules")
-	if err == object.ErrFileNotFound {
+	// Can't use commit.FindFile(). .gitmodules might be large,
+	// and must be faulted in by calling our BlobObject()
+	// implementation
+	tree, err := commit.Tree()
+	if err != nil {
+		return nil, err
+	}
+
+	entry, err := tree.FindEntry(".gitmodules")
+	if err == object.ErrEntryNotFound {
 		r.submoduleConfig = noSubmodules
 		return noSubmodules, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	rd, err := f.Reader()
+
+	blob, err := r.BlobObject(entry.Hash)
+	if err != nil {
+		return nil, err
+	}
+
+	rd, err := blob.Reader()
 	if err != nil {
 		return nil, err
 	}
