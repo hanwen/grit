@@ -12,6 +12,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/storer"
 )
 
 var gitExecDir string
@@ -47,6 +48,34 @@ type TestRepo struct {
 	CommitID plumbing.Hash
 }
 
+// TestMapToEntries provides input to PatchTree. keys are filenames, with
+// suffixes:
+// * '!' = delete
+// * '*' = executable
+// * '@' = symlink
+func TestMapToEntries(st storer.EncodedObjectStorer, in map[string]string) ([]object.TreeEntry, error) {
+	var es []object.TreeEntry
+	for k, v := range in {
+		id, err := SaveBlob(st, []byte(v))
+		if err != nil {
+			return nil, err
+		}
+		mode := filemode.Regular
+		if strings.HasSuffix(k, "*") {
+			k = k[:len(k)-1]
+			mode = filemode.Executable
+		} else if strings.HasSuffix(k, "@") {
+			k = k[:len(k)-1]
+			mode = filemode.Symlink
+		} else if strings.HasSuffix(k, "!") {
+			k = k[:len(k)-1]
+			id = plumbing.ZeroHash
+		}
+		es = append(es, object.TreeEntry{Name: k, Hash: id, Mode: mode})
+	}
+	return es, nil
+}
+
 func SetupTestRepo(dir string, fileContents map[string]string) (*TestRepo, error) {
 	tr := &TestRepo{
 		FileIDs: map[string]plumbing.Hash{},
@@ -69,24 +98,13 @@ func SetupTestRepo(dir string, fileContents map[string]string) (*TestRepo, error
 		return nil, err
 	}
 
-	var es []object.TreeEntry
-	for k, v := range fileContents {
-		id, err := SaveBlob(tr.Repo.Storer, []byte(v))
-		if err != nil {
-			return nil, err
-		}
-		mode := filemode.Regular
-		if strings.HasSuffix(k, "*") {
-			k = k[:len(k)-1]
-			mode = filemode.Executable
-		} else if strings.HasSuffix(k, "@") {
-			k = k[:len(k)-1]
-			mode = filemode.Symlink
-		}
-		tr.FileIDs[k] = id
-		es = append(es, object.TreeEntry{Name: k, Hash: id, Mode: mode})
+	es, err := TestMapToEntries(tr.Repo.Storer, fileContents)
+	if err != nil {
+		return nil, err
 	}
-
+	for _, e := range es {
+		tr.FileIDs[e.Name] = e.Hash
+	}
 	t := &object.Tree{}
 	tr.TreeID, err = PatchTree(tr.Repo.Storer, t, es)
 	if err != nil {

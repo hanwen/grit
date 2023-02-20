@@ -44,3 +44,25 @@ func SaveCommit(st storer.EncodedObjectStorer, c *object.Commit) (id plumbing.Ha
 	}
 	return st.SetEncodedObject(enc)
 }
+
+func ModifyCommit(st storer.EncodedObjectStorer, c *object.Commit, newContent map[string]string, message string) (id plumbing.Hash, err error) {
+	tree, err := object.GetTree(st, c.TreeHash)
+
+	es, err := TestMapToEntries(st, newContent)
+	if err != nil {
+		return id, err
+	}
+
+	treeID, err := PatchTree(st, tree, es)
+	if err != nil {
+		return id, err
+	}
+
+	newCommit := object.Commit{
+		Message:      message,
+		TreeHash:     treeID,
+		ParentHashes: []plumbing.Hash{c.Hash},
+	}
+
+	return SaveCommit(st, &newCommit)
+}
