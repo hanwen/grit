@@ -46,11 +46,24 @@ func ServeGit(root string, l net.Listener) {
 type TestRepo struct {
 	Repo     *git.Repository
 	Listener net.Listener
+	Name     string
 	RepoURL  string
 
 	FileIDs  map[string]plumbing.Hash
 	TreeID   plumbing.Hash
 	CommitID plumbing.Hash
+}
+
+func (tr *TestRepo) Serve(root string) error {
+	var err error
+	tr.Listener, err = net.Listen("tcp", "localhost:0")
+	if err != nil {
+		return err
+	}
+
+	ServeGit(root, tr.Listener)
+	tr.RepoURL = fmt.Sprintf("http://%s/%s", tr.Listener.Addr(), tr.Name)
+	return nil
 }
 
 func (tr *TestRepo) Close() {
@@ -62,6 +75,7 @@ func (tr *TestRepo) Close() {
 // * '!' = delete
 // * '*' = executable
 // * '@' = symlink
+// * '#' = submodule.
 func TestMapToEntries(st storer.EncodedObjectStorer, in map[string]string) ([]object.TreeEntry, error) {
 	var es []object.TreeEntry
 	for k, v := range in {
@@ -70,16 +84,26 @@ func TestMapToEntries(st storer.EncodedObjectStorer, in map[string]string) ([]ob
 			return nil, err
 		}
 		mode := filemode.Regular
-		if strings.HasSuffix(k, "*") {
-			k = k[:len(k)-1]
+
+		last := k[len(k)-1]
+		trim := true
+		switch last {
+		case '*':
 			mode = filemode.Executable
-		} else if strings.HasSuffix(k, "@") {
-			k = k[:len(k)-1]
+		case '@':
 			mode = filemode.Symlink
-		} else if strings.HasSuffix(k, "!") {
-			k = k[:len(k)-1]
+		case '!':
 			id = plumbing.ZeroHash
+		case '#':
+			mode = filemode.Submodule
+			id = plumbing.NewHash(v)
+		default:
+			trim = false
 		}
+		if trim {
+			k = k[:len(k)-1]
+		}
+
 		es = append(es, object.TreeEntry{Name: k, Hash: id, Mode: mode})
 	}
 	return es, nil
@@ -88,6 +112,7 @@ func TestMapToEntries(st storer.EncodedObjectStorer, in map[string]string) ([]ob
 func SetupTestRepo(root, name string, fileContents map[string]string) (*TestRepo, error) {
 	tr := &TestRepo{
 		FileIDs: map[string]plumbing.Hash{},
+		Name:    name,
 	}
 
 	var err error
@@ -133,15 +158,6 @@ func SetupTestRepo(root, name string, fileContents map[string]string) (*TestRepo
 	if err := tr.Repo.Storer.SetReference(ref); err != nil {
 		return nil, err
 	}
-
-	tr.Listener, err = net.Listen("tcp", "localhost:0")
-	if err != nil {
-		return nil, err
-	}
-
-	ServeGit(root, tr.Listener)
-
-	tr.RepoURL = fmt.Sprintf("http://%s/%s", tr.Listener.Addr(), name)
 
 	return tr, nil
 }

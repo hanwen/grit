@@ -96,7 +96,6 @@ func (r *Repository) getSubmoduleConfig(commit *object.Commit) (*config.Modules,
 	}
 
 	r.submoduleConfig = mods
-	r.submodules = make(map[string]*Repository)
 	return mods, nil
 }
 
