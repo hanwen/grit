@@ -29,27 +29,6 @@ By bypassing the Git command-line, we can control the entire user-experience. Th
 By implementing submodule support natively, we can provide a first-class support for Gerrit topics.
 
 
-PERFORMANCE
-
-The following command
-```
-go run cmd/fuse/main.go -repo ~/tmp/android/ \
-   -url https://android.googlesource.com/platform/superproject/ \
-   -id 9f8a75a0fcce971f695cfb45ed4a6888ef88d4f0 \
-   /tmp/x
-```
-
-* starting from scratch takes 2m01 on a 300mbps connection (file content
->10k lazily fetched), on a i7-8665U@1.9ghz.
-
-* with hot cache, 13 seconds from start to mount ready.
-
-* adding file under external/tink/ => 0.495s to update superproject
-  SHA1. This is equivalent to calculating status
-
-* enumerating 1M files: 48.4s.
-
-
 EXAMPLE
 
 To start the daemon,
