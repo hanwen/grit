@@ -412,6 +412,27 @@ func (n *TreeNode) SetID(id plumbing.Hash, mode filemode.FileMode, ts time.Time)
 	n.RmChild(remove...)
 
 	nodePath := n.Path(n.root.EmbeddedInode())
+
+	loadEntry := func(name string, mode filemode.FileMode, hash plumbing.Hash) error {
+		childOps, err := n.root.newGitNode(mode, filepath.Join(nodePath, name))
+		if err != nil {
+			return err
+		}
+		fsMode := uint32(mode)
+		if mode == filemode.Submodule {
+			fsMode = fuse.S_IFDIR
+		}
+		child := n.NewPersistentInode(context.Background(), childOps, fs.StableAttr{Mode: fsMode})
+		n.AddChild(name, child, true)
+		return childOps.SetID(hash, mode, ts)
+	}
+
+	type submoduleTask struct {
+		name string
+		id   plumbing.Hash
+		err  error
+	}
+	var todo []*submoduleTask
 	for _, e := range tree.Entries {
 		child := n.GetChild(e.Name)
 		if child != nil {
@@ -424,22 +445,27 @@ func (n *TreeNode) SetID(id plumbing.Hash, mode filemode.FileMode, ts time.Time)
 			}
 		}
 
-		childOps, err := n.root.newGitNode(e.Mode, filepath.Join(nodePath, e.Name))
-		if err != nil {
-			return err
-		}
-
-		fsMode := uint32(e.Mode)
-		if fsMode == uint32(filemode.Submodule) {
-			fsMode = fuse.S_IFDIR
-		}
-		child = n.NewPersistentInode(context.Background(), childOps, fs.StableAttr{Mode: fsMode})
-		n.AddChild(e.Name, child, true)
-		if err := childOps.SetID(e.Hash, e.Mode, ts); err != nil {
-
-			return err
+		if e.Mode == filemode.Submodule {
+			todo = append(todo, &submoduleTask{
+				name: e.Name,
+				id:   e.Hash,
+			})
+		} else {
+			if err := loadEntry(e.Name, e.Mode, e.Hash); err != nil {
+				return err
+			}
 		}
 	}
+
+	var wg sync.WaitGroup
+	for _, t := range todo {
+		wg.Add(1)
+		go func(task *submoduleTask) {
+			defer wg.Done()
+			task.err = loadEntry(task.name, filemode.Submodule, task.id)
+		}(t)
+	}
+	wg.Wait()
 
 	n.mu.Lock()
 	defer n.mu.Unlock()
