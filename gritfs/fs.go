@@ -36,7 +36,7 @@ type Node interface {
 	GetRepoNode() *RepoNode
 	GetTreeNode() *TreeNode
 	FitsMode(filemode.FileMode) bool
-	SetID(plumbing.Hash, filemode.FileMode, time.Time) error
+	setID(plumbing.Hash, filemode.FileMode, time.Time) error
 }
 
 ////////////////////////////////////////////////////////////////
@@ -79,7 +79,7 @@ func (n *BlobNode) ID() (plumbing.Hash, error) {
 	return id, err
 }
 
-func (n *BlobNode) SetID(id plumbing.Hash, mode filemode.FileMode, ts time.Time) error {
+func (n *BlobNode) setID(id plumbing.Hash, mode filemode.FileMode, ts time.Time) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.blobID = id
@@ -386,7 +386,7 @@ func (n *TreeNode) FitsMode(mode filemode.FileMode) bool {
 	return mode == filemode.Dir
 }
 
-func (n *TreeNode) SetID(id plumbing.Hash, mode filemode.FileMode, ts time.Time) error {
+func (n *TreeNode) setID(id plumbing.Hash, mode filemode.FileMode, ts time.Time) error {
 	n.mu.Lock()
 	tid := n.treeID
 	n.mu.Unlock()
@@ -424,7 +424,7 @@ func (n *TreeNode) SetID(id plumbing.Hash, mode filemode.FileMode, ts time.Time)
 		}
 		child := n.NewPersistentInode(context.Background(), childOps, fs.StableAttr{Mode: fsMode})
 		n.AddChild(name, child, true)
-		return childOps.SetID(hash, mode, ts)
+		return childOps.setID(hash, mode, ts)
 	}
 
 	type submoduleTask struct {
@@ -438,7 +438,7 @@ func (n *TreeNode) SetID(id plumbing.Hash, mode filemode.FileMode, ts time.Time)
 		if child != nil {
 			node, ok := child.Operations().(Node)
 			if ok && node.FitsMode(e.Mode) {
-				if err := node.SetID(e.Hash, e.Mode, ts); err != nil {
+				if err := node.setID(e.Hash, e.Mode, ts); err != nil {
 					return err
 				}
 				continue
@@ -849,6 +849,10 @@ func (r *RepoNode) idTS(wsUpdate *WorkspaceUpdate) (plumbing.Hash, time.Time, er
 }
 
 func (n *RepoNode) SetID(id plumbing.Hash, mode filemode.FileMode, ts time.Time) error {
+	return n.setID(id, mode, ts)
+}
+
+func (n *RepoNode) setID(id plumbing.Hash, mode filemode.FileMode, ts time.Time) error {
 	if n.commit.Hash == id {
 		return nil
 	}
@@ -863,7 +867,7 @@ func (n *RepoNode) SetID(id plumbing.Hash, mode filemode.FileMode, ts time.Time)
 	}); err != nil {
 		return err
 	}
-	return n.TreeNode.SetID(commit.TreeHash, mode, ts)
+	return n.TreeNode.setID(commit.TreeHash, mode, ts)
 }
 
 func (n *RepoNode) Snapshot(upd *WorkspaceUpdate) (*object.Commit, *WorkspaceState, error) {
@@ -1011,5 +1015,5 @@ func (r *RepoNode) OnAdd(ctx context.Context) {
 }
 
 func (r *RepoNode) onAdd(ctx context.Context) error {
-	return r.TreeNode.SetID(r.commit.TreeHash, filemode.Dir, time.Now())
+	return r.TreeNode.setID(r.commit.TreeHash, filemode.Dir, time.Now())
 }

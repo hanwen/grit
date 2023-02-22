@@ -594,7 +594,7 @@ func CheckoutCommand(args []string, dir string, ioc *IOClient, root gritfs.Node)
 		return 1, nil
 	}
 
-	if err := root.SetID(h, filemode.Dir, time.Now()); err != nil {
+	if err := root.GetRepoNode().SetID(h, filemode.Dir, time.Now()); err != nil {
 		ioc.Printf("%s\n", err)
 		return 1, nil
 	}
