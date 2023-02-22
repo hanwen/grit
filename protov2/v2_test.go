@@ -19,6 +19,7 @@ func TestObjectInfo(t *testing.T) {
 			"g":    strings.Repeat("x", 1025),
 			"h":    strings.Repeat("x", 1023),
 		})
+	tr.Serve(tmp)
 	t.Cleanup(tr.Close)
 
 	cl, err := NewClient(tr.RepoURL)
