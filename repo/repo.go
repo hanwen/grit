@@ -131,6 +131,9 @@ func (r *Repository) maybeFetchCommit(id plumbing.Hash) (*object.Commit, error) 
 	if err != plumbing.ErrObjectNotFound {
 		return nil, err
 	}
+	if err := r.setClient(); err != nil {
+		return nil, err
+	}
 
 	opts := &protov2.FetchOptions{
 		Progress: os.Stderr,
@@ -212,6 +215,9 @@ func (r *Repository) FetchCommit(commitID plumbing.Hash) (commit *object.Commit,
 func (r *Repository) BlobObject(id plumbing.Hash) (*object.Blob, error) {
 	obj, err := r.Repository.BlobObject(id)
 	if err == plumbing.ErrObjectNotFound {
+		if err := r.setClient(); err != nil {
+			return nil, err
+		}
 		opts := &protov2.FetchOptions{
 			Progress: os.Stderr,
 			Want:     []plumbing.Hash{id},
@@ -234,10 +240,6 @@ func NewRepo(
 	if err != nil {
 		return nil, err
 	}
-	cl, err := protov2.NewClient(repoURL.String())
-	if err != nil {
-		return nil, err
-	}
 	fn := filepath.Join(repoPath, "blob-sizes.txt")
 	sizes, err := readSizes(fn)
 	if err != nil {
@@ -248,14 +250,28 @@ func NewRepo(
 		Repository: r,
 		repoPath:   repoPath,
 		repoURL:    repoURL,
-		gitClient:  cl,
 		sizes:      sizes,
 	}, nil
+}
+
+func (r *Repository) setClient() error {
+	if r.gitClient != nil {
+		return nil
+	}
+	cl, err := protov2.NewClient(r.repoURL.String())
+	if err != nil {
+		return err
+	}
+	r.gitClient = cl
+	return nil
 }
 
 func (r *Repository) ObjectSizes(keys []plumbing.Hash) (map[plumbing.Hash]uint64, error) {
 	if len(keys) == 0 {
 		return nil, nil
+	}
+	if err := r.setClient(); err != nil {
+		return nil, err
 	}
 	log.Printf("Fetching %d sizes for %s", len(keys), r.repoURL)
 	newSizes, err := r.gitClient.ObjectInfo(keys)
