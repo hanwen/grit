@@ -156,7 +156,7 @@ func (r *Repository) maybeFetchCommit(id plumbing.Hash) (*object.Commit, error) 
 func (r *Repository) fetchSubmoduleCommit(submod *config.Submodule, id plumbing.Hash) error {
 	subRepo, err := r.OpenSubmodule(submod)
 	if err != nil {
-		return err
+		return fmt.Errorf("OpenSubmodule(%q): %v", submod.Name, err)
 	}
 
 	_, err = subRepo.FetchCommit(id)
@@ -167,17 +167,17 @@ func (r *Repository) fetchSubmoduleCommit(submod *config.Submodule, id plumbing.
 func (r *Repository) FetchCommit(commitID plumbing.Hash) (commit *object.Commit, err error) {
 	commit, err = r.maybeFetchCommit(commitID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("maybeFetchCommit: %v", err)
 	}
 
 	mods, err := r.SubmoduleConfig(commit)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("SubmoduleConfig: %v", err)
 	}
 
 	tree, err := commit.Tree()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Tree: %v", err)
 	}
 
 	var wg sync.WaitGroup
@@ -186,7 +186,9 @@ func (r *Repository) FetchCommit(commitID plumbing.Hash) (commit *object.Commit,
 	for _, submod := range mods.Submodules {
 		entry, err := tree.FindEntry(submod.Path)
 		if err != nil {
-			return nil, err
+			// it's easy to remove the entry without
+			// updating the .gitmodules file
+			continue
 		}
 		if entry.Mode != filemode.Submodule {
 			continue
@@ -198,7 +200,11 @@ func (r *Repository) FetchCommit(commitID plumbing.Hash) (commit *object.Commit,
 		count++
 		go func() {
 			defer wg.Done()
-			errs <- r.fetchSubmoduleCommit(l, entry.Hash)
+			err := r.fetchSubmoduleCommit(l, entry.Hash)
+			if err != nil {
+				err = fmt.Errorf("fetchSubmoduleCommit(%s): %v", l.Path, err)
+			}
+			errs <- err
 		}()
 	}
 
