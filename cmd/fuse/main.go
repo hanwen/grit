@@ -69,7 +69,7 @@ func main() {
 	}
 	root, err := server.NewCommandServer(cas, gritRepo, *workspaceName)
 	if err != nil {
-		log.Fatal("NewRoot", err)
+		log.Fatalf("NewCommandServer: %v", err)
 	}
 
 	// Mount the file system
