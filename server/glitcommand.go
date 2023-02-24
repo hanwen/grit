@@ -108,6 +108,7 @@ func wsLog(gritRepo *repo.Repository, ioc *IOClient, wsname string, maxEntry int
 
 		ioc.Printf("%s at commit %s - %s\n", wsCommit.Committer.When.Format(DateTime), checkedOut.Hash, lines[0])
 		ioc.Printf("  Reason: %s\n", wsCommit.Message)
+		ioc.Printf("  Metadata ID: %x\n", wsCommit.Hash[:8])
 		ioc.Printf("  Status: %#v\n", status)
 
 		if wsCommit.NumParents() == 1 {
@@ -594,7 +595,7 @@ func CheckoutCommand(args []string, dir string, ioc *IOClient, root gritfs.Node)
 		return 1, nil
 	}
 
-	if err := root.GetRepoNode().SetID(h, filemode.Dir, time.Now()); err != nil {
+	if err := root.GetRepoNode().SetID(h, time.Now()); err != nil {
 		ioc.Printf("%s\n", err)
 		return 1, nil
 	}

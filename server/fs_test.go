@@ -219,6 +219,12 @@ func TestSubmodules(t *testing.T) {
 		}
 	}
 
+	if fi, err := os.Stat(filepath.Join(mntDir, "sub1")); err != nil {
+		t.Fatalf("stat: %v", err)
+	} else if !fi.IsDir() {
+		t.Fatalf("not a dir: %v", fi)
+	}
+
 	for k, v := range sub1files {
 		c, err := ioutil.ReadFile(filepath.Join(mntDir, "sub1", k))
 		if err != nil {
