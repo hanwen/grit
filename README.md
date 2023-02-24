@@ -36,7 +36,7 @@ To start the daemon,
 ```
 git init --bare /tmp/g
 mkdir /tmp/x
-go run ./cmd/fuse/main.go -url https://gerrit.googlesource.com/gerrit -id 209c4dee0ecc2effea8259879b4b882eaf7c41bb -repo /tmp/gerrit/.git  /tmp/x
+go run ./cmd/fuse/main.go -url https://gerrit.googlesource.com/gerrit -workspace ws1 -repo /tmp/gerrit/.git  /tmp/x
 ```
 
 To interact with the checkout
