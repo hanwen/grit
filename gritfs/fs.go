@@ -29,6 +29,9 @@ import (
 	"github.com/hanwen/gritfs/repo"
 )
 
+var emptyBlob = plumbing.NewHash("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391")
+var emptyTree = plumbing.NewHash("4b825dc642cb6eb9a060e54bf8d69288fbee4904")
+
 type Node interface {
 	fs.InodeEmbedder
 
@@ -38,7 +41,7 @@ type Node interface {
 	GetRepoNode() *RepoNode
 	GetTreeNode() *TreeNode
 	FitsMode(filemode.FileMode) bool
-	setID(plumbing.Hash, filemode.FileMode, time.Time) error
+	setID(plumbing.Hash, filemode.FileMode, *setIDState) error
 }
 
 ////////////////////////////////////////////////////////////////
@@ -81,22 +84,17 @@ func (n *BlobNode) ID() (plumbing.Hash, error) {
 	return id, err
 }
 
-func (n *BlobNode) setID(id plumbing.Hash, mode filemode.FileMode, ts time.Time) error {
+func (n *BlobNode) setID(id plumbing.Hash, mode filemode.FileMode, state *setIDState) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.blobID = id
-	n.modTime = ts
+	n.modTime = state.ts
 	n.mode = mode
 
 	ok := true
 	n.size, ok = n.root.repo.CachedBlobSize(id)
 	if !ok {
-		blob, err := n.root.repo.BlobObject(id)
-		if err != nil {
-			return fmt.Errorf("size missing: %v", id)
-		}
-
-		n.size = uint64(blob.Size)
+		state.missingSizes = append(state.missingSizes, n)
 	}
 	return nil
 }
@@ -388,7 +386,7 @@ func (n *TreeNode) FitsMode(mode filemode.FileMode) bool {
 	return mode == filemode.Dir
 }
 
-func (n *TreeNode) setID(id plumbing.Hash, mode filemode.FileMode, ts time.Time) error {
+func (n *TreeNode) setID(id plumbing.Hash, mode filemode.FileMode, state *setIDState) error {
 	n.mu.Lock()
 	tid := n.treeID
 	n.mu.Unlock()
@@ -421,35 +419,25 @@ func (n *TreeNode) setID(id plumbing.Hash, mode filemode.FileMode, ts time.Time)
 			return err
 		}
 		fsMode := uint32(mode)
-		if mode == filemode.Submodule {
-			fsMode = fuse.S_IFDIR
-		}
 		child := n.NewPersistentInode(context.Background(), childOps, fs.StableAttr{Mode: fsMode})
 		n.AddChild(name, child, true)
-		return childOps.setID(hash, mode, ts)
+		return childOps.setID(hash, mode, state)
 	}
 
 	for _, e := range tree.Entries {
 		if e.Mode == filemode.Submodule {
 			path := filepath.Join(nodePath, e.Name)
-			smState := n.root.submodules[path]
-			if smState == nil {
-				log.Panicf("%v, %s", n.root.submodules, path)
-			}
-			if smState.node == nil {
-				log.Panicf("nil node at %q, %v", path, smState)
-			}
-			if _, parent := smState.node.Parent(); parent == nil {
-				n.AddChild(e.Name, smState.node.EmbeddedInode(), true)
-			}
+			smState := state.submodules[path]
 			smState.hash = e.Hash
+			smState.parent = n.EmbeddedInode()
+			smState.name = e.Name
 			continue
 		}
 		child := n.GetChild(e.Name)
 		if child != nil {
 			node, ok := child.Operations().(Node)
 			if ok && node.FitsMode(e.Mode) {
-				if err := node.setID(e.Hash, e.Mode, ts); err != nil {
+				if err := node.setID(e.Hash, e.Mode, state); err != nil {
 					return err
 				}
 				continue
@@ -463,8 +451,8 @@ func (n *TreeNode) setID(id plumbing.Hash, mode filemode.FileMode, ts time.Time)
 
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.modTime = ts
-	n.idTime = ts
+	n.modTime = state.ts
+	n.idTime = state.ts
 	n.treeID = id
 	return nil
 }
@@ -629,12 +617,20 @@ func (n *TreeNode) Create(ctx context.Context, name string, flags uint32, mode u
 
 type submoduleState struct {
 	node   *RepoNode
-	parent *TreeNode
+	parent *fs.Inode
 	name   string
 	hash   plumbing.Hash
 
 	config *config.Submodule
 	err    error
+}
+
+type setIDState struct {
+	// submodules
+	submodules map[string]*submoduleState
+
+	missingSizes []*BlobNode
+	ts           time.Time
 }
 
 type RepoNode struct {
@@ -645,9 +641,6 @@ type RepoNode struct {
 	workspaceName string
 	repo          *repo.Repository
 	commit        *object.Commit
-
-	// submodules
-	submodules map[string]*submoduleState
 
 	// calculation timestamp for commit.Hash
 	idTime time.Time
@@ -707,8 +700,9 @@ func (r *RepoNode) StoreCommit(c *object.Commit, startTS time.Time, wsUpdate *Wo
 	}
 
 	if before == nil || commitID != before.Hash {
-		log.Printf("%s: new commit %v for tree %v", r.Path(nil), c.Hash, c.TreeHash)
-
+		if r.Path(nil) != "" {
+			log.Printf("%s: new commit %v for tree %v", r.Path(nil), c.Hash, c.TreeHash)
+		}
 		r.commit = c
 		r.idTime = startTS
 
@@ -856,87 +850,127 @@ func (r *RepoNode) idTS(wsUpdate *WorkspaceUpdate) (plumbing.Hash, time.Time, er
 }
 
 func (n *RepoNode) SetID(id plumbing.Hash, ts time.Time) error {
-	return n.setID(id, filemode.Submodule, ts)
+	state := setIDState{ts: ts}
+	return n.setID(id, filemode.Submodule, &state)
 }
 
-func (n *RepoNode) setID(id plumbing.Hash, mode filemode.FileMode, ts time.Time) error {
+func inodeWalk(n *fs.Inode, p string) *fs.Inode {
+	cs := strings.Split(p, "/")
+	for _, c := range cs {
+		n = n.GetChild(c)
+		if n == nil {
+			break
+		}
+	}
+	return n
+}
+
+func (n *RepoNode) currentSubmods(commit *object.Commit) (map[string]*submoduleState, error) {
+	cfg, err := n.repo.SubmoduleConfig(commit)
+	if err != nil {
+		return nil, err
+	}
+
+	result := map[string]*submoduleState{}
+	for _, sm := range cfg.Submodules {
+		subNode := inodeWalk(n.EmbeddedInode(), sm.Path)
+		if subNode == nil {
+			result[sm.Path] = &submoduleState{
+				config: sm,
+			}
+			continue
+		}
+		repoNode, ok := subNode.Operations().(*RepoNode)
+		if !ok {
+			result[sm.Path] = &submoduleState{
+				config: sm,
+			}
+			continue
+		}
+		smState := &submoduleState{
+			node:   repoNode,
+			hash:   repoNode.commit.Hash,
+			config: sm,
+		}
+		pname, parent := repoNode.Parent()
+		smState.name = pname
+		smState.parent = parent
+
+		result[sm.Path] = smState
+	}
+	return result, nil
+}
+
+func (n *RepoNode) setID(id plumbing.Hash, mode filemode.FileMode, state *setIDState) error {
 	if n.commit.Hash == id {
 		return nil
 	}
+
 	commit, err := n.repo.CommitObject(id)
 	if err != nil {
 		return err
 	}
 
-	cfg, err := n.repo.SubmoduleConfig(commit)
+	state.submodules, err = n.currentSubmods(commit)
 	if err != nil {
 		return err
 	}
 
-	todo := []*submoduleState{}
-	for _, sm := range cfg.Submodules {
-		if ch := n.submodules[sm.Path]; ch == nil {
-			todo = append(todo, &submoduleState{
-				config: sm,
-			})
-		}
-	}
-
-	var wg sync.WaitGroup
-	for _, t := range todo {
-		wg.Add(1)
-		go func(ss *submoduleState) {
-			defer wg.Done()
-			subRepo, err := n.repo.OpenSubmodule(ss.config)
-			if err != nil {
-				ss.err = err
-				return
-			}
-
-			ops, err := NewRoot(n.cas, subRepo, n.workspaceName)
-			if err != nil {
-				ss.err = err
-				return
-			}
-
-			ss.node = ops
-			child := n.NewPersistentInode(context.Background(), ops, fs.StableAttr{Mode: fuse.S_IFDIR})
-
-			escaped := "#submodule#-" + strings.Replace(ss.config.Path, "/", "%2f", -1)
-
-			// Trigger OnAdd
-			n.AddChild(escaped, child, true)
-
-			// avoid garbage entries.
-			n.RmChild(escaped)
-
-		}(t)
-	}
-	wg.Wait()
-
-	for _, t := range todo {
-		n.submodules[t.config.Path] = t
-	}
-
-	if err := n.TreeNode.setID(commit.TreeHash, mode, ts); err != nil {
+	if err := n.TreeNode.setID(commit.TreeHash, mode, state); err != nil {
 		return err
 	}
 
-	for _, state := range n.submodules {
-		if _, parent := state.node.Parent(); parent == nil {
-			continue
-		}
+	var wg sync.WaitGroup
+	for _, smState := range state.submodules {
 		wg.Add(1)
 		go func(ss *submoduleState) {
 			defer wg.Done()
-			if err := ss.node.SetID(ss.hash, ts); err != nil {
-				ss.err = err
+
+			if ss.parent != nil && ss.node == nil {
+				subRepo, err := n.repo.OpenSubmodule(ss.config)
+				if err != nil {
+					ss.err = err
+					return
+				}
+
+				ops, err := NewRoot(n.cas, subRepo, n.workspaceName)
+				if err != nil {
+					ss.err = err
+					return
+				}
+
+				ss.node = ops
+				child := n.NewPersistentInode(context.Background(), ops, fs.StableAttr{Mode: fuse.S_IFDIR})
+
+				ss.parent.AddChild(ss.name, child, true)
 			}
-		}(state)
+			if ss.node != nil {
+				ss.err = ss.node.SetID(ss.hash, state.ts)
+			}
+		}(smState)
 	}
 	wg.Wait()
 
-	if err := n.StoreCommit(commit, ts, &WorkspaceUpdate{
+	for _, smState := range state.submodules {
+		if smState.err != nil {
+			return fmt.Errorf("module %q: %v", smState.config.Path, smState.err)
+		}
+	}
+
+	var keys []plumbing.Hash
+	for _, blob := range state.missingSizes {
+		keys = append(keys, blob.blobID)
+	}
+
+	sizes, err := n.repo.ObjectSizes(keys)
+	if err != nil {
+		return err
+	}
+	for _, blobNode := range state.missingSizes {
+		blobNode.size = sizes[blobNode.blobID]
+	}
+
+	if err := n.StoreCommit(commit, state.ts, &WorkspaceUpdate{
 		Message: "SetID",
 	}); err != nil {
 		return err
@@ -958,7 +992,6 @@ func NewRoot(cas *CAS, repo *repo.Repository, workspaceName string) (*RepoNode, 
 		repo:          repo,
 		cas:           cas,
 		idTime:        time.Now(),
-		submodules:    make(map[string]*submoduleState),
 	}
 	root.root = root
 

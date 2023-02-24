@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"log"
 	"net/url"
@@ -19,7 +18,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/hanwen/gritfs/protov2"
 )
 
@@ -124,87 +122,6 @@ func (r *Repository) OpenSubmodule(submod *config.Submodule) (*Repository, error
 	return sr, nil
 }
 
-type submoduleLoad struct {
-	r      *Repository
-	hash   plumbing.Hash
-	commit *object.Commit
-	err    error
-}
-
-func (r *Repository) loadSubmoduleWorker(todo <-chan *submoduleLoad) error {
-	var wg sync.WaitGroup
-	var acc []*submoduleLoad
-	for t := range todo {
-		wg.Add(1)
-		acc = append(acc, t)
-		go func(sl *submoduleLoad) {
-			defer wg.Done()
-			// TODO - gs.com returns 500 when asking nonexistent hash.
-			sl.commit, sl.err = sl.r.FetchCommit(sl.hash)
-		}(t)
-	}
-	wg.Wait()
-
-	for _, t := range acc {
-		if t.err != nil {
-			return t.err
-		}
-	}
-	return nil
-}
-
-func (r *Repository) recursiveFetch(commit *object.Commit, mods *config.Modules, todo chan<- *submoduleLoad, newBlobs map[plumbing.Hash]int64) error {
-	tree, err := r.TreeObject(commit.TreeHash)
-	if err != nil {
-		return err
-	}
-	tw := object.NewTreeWalker(tree, true, map[plumbing.Hash]bool{})
-	defer tw.Close()
-
-path:
-	for {
-		path, entry, err := tw.Next()
-		if err == storer.ErrStop || err == io.EOF {
-			break
-		}
-		if err != nil {
-			log.Printf("next: %v", err)
-			return err
-		}
-		switch entry.Mode {
-		case filemode.Regular, filemode.Executable, filemode.Symlink:
-			if _, ok := r.sizes[entry.Hash]; !ok {
-				obj, err := r.Repository.BlobObject(entry.Hash)
-				if err == plumbing.ErrObjectNotFound {
-					newBlobs[entry.Hash] = -1
-				} else {
-					newBlobs[entry.Hash] = obj.Size
-				}
-			}
-			continue path
-		case filemode.Submodule:
-			break
-		case filemode.Dir:
-			continue path
-		default:
-			return fmt.Errorf("unknown mode in %v", entry)
-		}
-
-		submod := SubmoduleByPath(mods, path)
-		if submod == nil {
-			return fmt.Errorf("submodule %q unknown", path)
-		}
-
-		subRepo, err := r.OpenSubmodule(submod)
-		todo <- &submoduleLoad{
-			r:    subRepo,
-			hash: entry.Hash,
-		}
-	}
-
-	return nil
-}
-
 func (r *Repository) maybeFetchCommit(id plumbing.Hash) (*object.Commit, error) {
 	commit, err := r.CommitObject(id)
 	if err == nil {
@@ -233,8 +150,17 @@ func (r *Repository) maybeFetchCommit(id plumbing.Hash) (*object.Commit, error) 
 	return r.CommitObject(id)
 }
 
-// FetchCommit fetches the commit, fetching submodules recursively. On
-// success all blob sizes are known.
+func (r *Repository) fetchSubmoduleCommit(submod *config.Submodule, id plumbing.Hash) error {
+	subRepo, err := r.OpenSubmodule(submod)
+	if err != nil {
+		return err
+	}
+
+	_, err = subRepo.FetchCommit(id)
+	return err
+}
+
+// FetchCommit fetches the commit, fetching submodules recursively
 func (r *Repository) FetchCommit(commitID plumbing.Hash) (commit *object.Commit, err error) {
 	commit, err = r.maybeFetchCommit(commitID)
 	if err != nil {
@@ -246,23 +172,40 @@ func (r *Repository) FetchCommit(commitID plumbing.Hash) (commit *object.Commit,
 		return nil, err
 	}
 
-	newBlobs := map[plumbing.Hash]int64{}
-	submoduleLoads := make(chan *submoduleLoad, len(mods.Submodules))
-	go func() {
-		err = r.recursiveFetch(commit, mods, submoduleLoads, newBlobs)
-		close(submoduleLoads)
-	}()
-
-	if err := r.loadSubmoduleWorker(submoduleLoads); err != nil {
-		return nil, err
-	}
-
+	tree, err := commit.Tree()
 	if err != nil {
 		return nil, err
 	}
-	if err := r.fetchSizes(newBlobs); err != nil {
-		return nil, err
+
+	var wg sync.WaitGroup
+	errs := make(chan error, len(mods.Submodules))
+	count := 0
+	for _, submod := range mods.Submodules {
+		entry, err := tree.FindEntry(submod.Path)
+		if err != nil {
+			return nil, err
+		}
+		if entry.Mode != filemode.Submodule {
+			continue
+		}
+
+		l := submod
+
+		wg.Add(1)
+		count++
+		go func() {
+			defer wg.Done()
+			errs <- r.fetchSubmoduleCommit(l, entry.Hash)
+		}()
 	}
+
+	for i := 0; i < count; i++ {
+		err := <-errs
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return commit, nil
 }
 
@@ -310,38 +253,25 @@ func NewRepo(
 	}, nil
 }
 
-func (r *Repository) fetchSizes(newBlobs map[plumbing.Hash]int64) error {
-	if len(newBlobs) == 0 {
-		return nil
+func (r *Repository) ObjectSizes(keys []plumbing.Hash) (map[plumbing.Hash]uint64, error) {
+	if len(keys) == 0 {
+		return nil, nil
 	}
-	var keys []plumbing.Hash
-	for k, v := range newBlobs {
-		if v < 0 {
-			keys = append(keys, k)
-		}
-	}
-	if len(keys) > 0 {
-		log.Printf("Fetching %d sizes for %s", len(keys), r.repoURL)
-	}
+	log.Printf("Fetching %d sizes for %s", len(keys), r.repoURL)
 	newSizes, err := r.gitClient.ObjectInfo(keys)
 	if err != nil {
-		return err
-	}
-	for k, v := range newBlobs {
-		if v >= 0 {
-			newSizes[k] = uint64(v)
-		}
+		return nil, err
 	}
 	fn := filepath.Join(r.repoPath, "blob-sizes.txt")
 	if err := saveSizes(fn, newSizes); err != nil {
-		return err
+		return nil, err
 	}
 
 	for k, v := range newSizes {
 		r.sizes[k] = v
 	}
 
-	return nil
+	return newSizes, nil
 }
 
 func saveSizes(filename string, sizes map[plumbing.Hash]uint64) error {
