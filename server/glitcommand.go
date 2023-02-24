@@ -603,6 +603,27 @@ func CheckoutCommand(args []string, dir string, ioc *IOClient, root gritfs.Node)
 
 }
 
+func visit(n *fs.Inode) {
+	for _, v := range n.Children() {
+		visit(v)
+	}
+}
+
+// For benchmarking.
+func VisitCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
+	flagSet := flag.NewFlagSet("visit", flag.ContinueOnError)
+	flagSet.SetOutput(ioc)
+	flagSet.Usage = usage(flagSet)
+	if err := flagSet.Parse(args); err != nil {
+		return 2, nil // Parse already prints diagnostics.
+	}
+
+	node := root.GetRepoNode().EmbeddedInode()
+	visit(node)
+	return 0, nil
+
+}
+
 var dispatch = map[string]func([]string, string, *IOClient, gritfs.Node) (int, error){
 	"log":      LogCommand,
 	"wslog":    WSLogCommand,
@@ -612,6 +633,7 @@ var dispatch = map[string]func([]string, string, *IOClient, gritfs.Node) (int, e
 	"find":     FindCommand,
 	"checkout": CheckoutCommand,
 	"snapshot": SnapshotCommand,
+	"visit":    VisitCommand,
 }
 
 func Usage(ioc *IOClient) (int, error) {
