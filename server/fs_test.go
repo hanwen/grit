@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/hanwen/go-fuse/v2/fs"
@@ -71,6 +72,7 @@ func mountTest(t *testing.T, root fs.InodeEmbedder) string {
 	t.Cleanup(func() { server.Unmount() })
 	return mntDir
 }
+
 func TestFS(t *testing.T) {
 	srcRoot := t.TempDir()
 
@@ -135,7 +137,8 @@ func TestFS(t *testing.T) {
 		Message:  "bla",
 		NewState: gritfs.WorkspaceState{AutoSnapshot: true},
 	}
-	savedCommit, _, err := root.RepoNode.Snapshot(update)
+	res, err := root.RepoNode.Snapshot(update)
+	savedCommit := res.CheckedOut
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,10 +247,11 @@ func TestSubmodules(t *testing.T) {
 		Message:  "bla",
 		NewState: gritfs.WorkspaceState{AutoSnapshot: true},
 	}
-	savedCommit, _, err := root.RepoNode.Snapshot(update)
+	res, err := root.RepoNode.Snapshot(update)
 	if err != nil {
 		t.Fatal(err)
 	}
+	savedCommit := res.CheckedOut
 
 	if savedCommit.Hash == tr.CommitID {
 		t.Errorf("writing file should have changed commit ID")
@@ -259,5 +263,55 @@ func TestSubmodules(t *testing.T) {
 		if exit != 0 || err != nil {
 			t.Errorf("exit %d, %v", exit, err)
 		}
+	}
+}
+
+func TestSnapshot(t *testing.T) {
+	srcRoot := t.TempDir()
+
+	input := map[string]string{"a": "hello world",
+		"b/c/d": "xyz",
+		"b/c/e": "abc",
+		"b/c/f": "pqr",
+	}
+	tr, err := gitutil.SetupTestRepo(srcRoot, "repo", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.Serve(srcRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	root := newTestRoot(t, tr.RepoURL)
+	mntDir := mountTest(t, root)
+
+	ioc := &testIOC{}
+	exit, err := RunCommand([]string{"checkout", tr.CommitID.String()}, "", ioc, root.RepoNode)
+	if exit != 0 || err != nil {
+		t.Errorf("exit %d, %v", exit, err)
+	}
+
+	time.Sleep(time.Microsecond) // ensure clock advances
+	res, err := root.Snapshot(&gritfs.WorkspaceUpdate{
+		Message:  "snapshot call",
+		NewState: gritfs.WorkspaceState{AutoSnapshot: true},
+	})
+	if res.Recomputed != 0 {
+		t.Fatalf("got %d want %d", res.Recomputed, 0)
+	}
+
+	if err := ioutil.WriteFile(mntDir+"/b/c/d", []byte("different"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if res, err := root.Snapshot(&gritfs.WorkspaceUpdate{
+		Message:  "snapshot call",
+		TS:       time.Now(),
+		NewState: gritfs.WorkspaceState{AutoSnapshot: true},
+	}); err != nil {
+		t.Fatal(err)
+	} else if res.Recomputed != 4 {
+		// 4 = "b/c", "b/", "", commit
+		t.Fatalf("got %d want %d", res.Recomputed, 4)
 	}
 }

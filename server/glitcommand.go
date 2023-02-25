@@ -287,7 +287,10 @@ func amend(ioc *IOClient, root gritfs.Node) error {
 
 	c.Message = strings.Join(lines, "\n")
 
-	return root.GetRepoNode().StoreCommit(&c, time.Now(), &gritfs.WorkspaceUpdate{Message: "amend"})
+	return root.GetRepoNode().StoreCommit(&c, &gritfs.WorkspaceUpdate{
+		TS:      time.Now(),
+		Message: "amend",
+	})
 }
 
 func AmendCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
@@ -306,14 +309,14 @@ func commit(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 		NewState: gritfs.WorkspaceState{
 			AutoSnapshot: true,
 		},
+		TS: time.Now(),
 	}
-	commit, wsState, err := repoNode.Snapshot(&wsUpdate)
+	snapResult, err := repoNode.Snapshot(&wsUpdate)
 	if err != nil {
 		return err
 	}
-
-	if !wsState.AutoSnapshot {
-		ioc.Printf("No pending files; top commit is %s - %s", commit.Hash, gitutil.Subject(commit))
+	if !snapResult.State.AutoSnapshot {
+		ioc.Printf("No pending files; top commit is %s - %s", snapResult.CheckedOut.Hash, gitutil.Subject(snapResult.CheckedOut))
 		return nil
 	}
 
@@ -326,6 +329,7 @@ func commit(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 		return nil // Parse already prints diagnostics.
 	}
 
+	commit := snapResult.CheckedOut
 	parent, err := commit.Parent(0)
 	if err != nil {
 		return err
@@ -390,19 +394,23 @@ func commit(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 		commit.Message = after
 	}
 
-	if err := repoNode.StoreCommit(commit, time.Now(),
-		&gritfs.WorkspaceUpdate{Message: "commit"}); err != nil {
+	if err := repoNode.StoreCommit(commit,
+		&gritfs.WorkspaceUpdate{
+			TS:      time.Now(),
+			Message: "commit",
+		}); err != nil {
 		return err
 	}
 
 	// If other files were still changed, generate a new snapshot
 	wsUpdate = gritfs.WorkspaceUpdate{
+		TS:      time.Now(),
 		Message: "after commit command",
 		NewState: gritfs.WorkspaceState{
 			AutoSnapshot: true,
 		},
 	}
-	if _, _, err := repoNode.Snapshot(&wsUpdate); err != nil {
+	if _, err := repoNode.Snapshot(&wsUpdate); err != nil {
 		return err
 	}
 
@@ -415,11 +423,14 @@ func SnapshotCommand(args []string, dir string, ioc *IOClient, root gritfs.Node)
 		NewState: gritfs.WorkspaceState{
 			AutoSnapshot: true,
 		},
+		TS: time.Now(),
 	}
-	if _, _, err := root.GetRepoNode().Snapshot(&wsUpdate); err != nil {
+	res, err := root.GetRepoNode().Snapshot(&wsUpdate)
+	if err != nil {
 		ioc.Printf("Snapshot: %v", err)
 		return 1, nil
 	}
+	ioc.Printf("Recomputed %d hashes\n", res.Recomputed)
 	return 0, nil
 }
 
