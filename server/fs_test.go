@@ -317,3 +317,101 @@ func TestSnapshot(t *testing.T) {
 		t.Fatalf("got %d want %d", res.Recomputed, 4)
 	}
 }
+
+func testCommand(t *testing.T, args []string, dir string, root *gritfs.RepoNode) (out []byte) {
+	ioc := &testIOC{}
+	if exit, err := RunCommand(args, dir, ioc, root); exit != 0 || err != nil {
+		t.Log(ioc.String())
+		t.Fatalf("%s; %d/%v", args, exit, err)
+	}
+
+	return ioc.Bytes()
+}
+
+func TestRemount(t *testing.T) {
+	srcRoot := t.TempDir()
+
+	input := map[string]string{"a": "hello world",
+		"b/c":   "xyz",
+		"b/d":   "pqr",
+		"large": strings.Repeat("x", 20000),
+	}
+	tr, err := gitutil.SetupTestRepo(srcRoot, "repo", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.Serve(srcRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	casDir := t.TempDir()
+	cas, err := gritfs.NewCAS(casDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repoDir := t.TempDir()
+	gitRepo, err := git.PlainInit(repoDir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(tr.RepoURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gritRepo, err := repo.NewRepo(gitRepo, repoDir, u)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := NewCommandServer(cas, gritRepo, "ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mntDir := t.TempDir()
+	server, err := fs.Mount(mntDir, root, &fs.Options{
+		MountOptions: fuse.MountOptions{
+			//			Debug: true,
+		},
+		UID: uint32(os.Getuid()),
+		GID: uint32(os.Getgid()),
+	})
+	if err != nil {
+		t.Fatal("Mount", err)
+	}
+	defer server.Unmount()
+
+	testCommand(t, []string{"checkout", tr.CommitID.String()}, "", root.RepoNode)
+	content := []byte("different")
+	if err := ioutil.WriteFile(mntDir+"/file.txt", content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	testCommand(t, []string{"snapshot"}, "", root.RepoNode)
+
+	server.Unmount()
+	root, err = NewCommandServer(cas, gritRepo, "ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err = fs.Mount(mntDir, root, &fs.Options{
+		MountOptions: fuse.MountOptions{
+			//			Debug: true,
+		},
+		UID: uint32(os.Getuid()),
+		GID: uint32(os.Getgid()),
+	})
+	if err != nil {
+		t.Fatal("Mount", err)
+	}
+	defer server.Unmount()
+
+	loopback, err := ioutil.ReadFile(mntDir + "/file.txt")
+	if err != nil {
+		t.Fatal("Mount", err)
+	}
+
+	if !bytes.Equal(loopback, content) {
+		t.Fatalf("got %q want %q", loopback, content)
+	}
+}

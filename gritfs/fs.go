@@ -276,34 +276,18 @@ type openBlob struct {
 // save takes the file and saves it back into Git storage updating
 // n.id and n.size
 func (n *BlobNode) saveToGit() error {
-	enc := n.root.repo.Storer.NewEncodedObject()
-	enc.SetType(plumbing.BlobObject)
-	w, err := enc.Writer()
-	if err != nil {
-		return err
-	}
-
 	f, err := os.Open(n.backingFile)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	sz, err := io.Copy(w, f)
-	if err != nil {
-		return err
-	}
-	if err := w.Close(); err != nil {
-		return err
-	}
 
-	id, err := n.root.repo.Storer.SetEncodedObject(enc)
-	if err != nil {
-		return err
-	}
+	id, err := n.root.repo.SaveBlob(f)
+
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.blobID = id
-	n.size = uint64(sz)
+	n.size, _ = n.root.repo.CachedBlobSize(id)
 	n.modTime = time.Now()
 
 	return nil
@@ -1035,6 +1019,7 @@ func NewRoot(cas *CAS, repo *repo.Repository, workspaceName string) (*RepoNode, 
 		}
 	}
 
+	// todo - should be in OnAdd
 	root.commit, _, err = root.ReadWorkspaceCommit()
 	return root, err
 }

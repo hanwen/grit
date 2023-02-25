@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/url"
@@ -46,6 +47,36 @@ func (r *Repository) CachedBlobSize(id plumbing.Hash) (uint64, bool) {
 	defer r.mu.Unlock()
 	sz, ok := r.sizes[id]
 	return sz, ok
+}
+
+func (r *Repository) SaveBlob(rd io.Reader) (id plumbing.Hash, err error) {
+	enc := r.Storer.NewEncodedObject()
+	enc.SetType(plumbing.BlobObject)
+	w, err := enc.Writer()
+	if err != nil {
+		return id, err
+	}
+
+	sz, err := io.Copy(w, rd)
+	if err != nil {
+		return id, err
+	}
+	if err := w.Close(); err != nil {
+		return id, err
+	}
+
+	id, err = r.Storer.SetEncodedObject(enc)
+	if err != nil {
+		return id, err
+	}
+
+	if err := r.saveSizes(map[plumbing.Hash]uint64{id: uint64(sz)}); err != nil {
+		return id, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sizes[id] = uint64(sz)
+	return id, nil
 }
 
 func (r *Repository) SubmoduleConfig(commit *object.Commit) (*config.Modules, error) {
@@ -284,8 +315,7 @@ func (r *Repository) ObjectSizes(keys []plumbing.Hash) (map[plumbing.Hash]uint64
 	if err != nil {
 		return nil, err
 	}
-	fn := filepath.Join(r.repoPath, "blob-sizes.txt")
-	if err := saveSizes(fn, newSizes); err != nil {
+	if err := r.saveSizes(newSizes); err != nil {
 		return nil, err
 	}
 
@@ -294,6 +324,11 @@ func (r *Repository) ObjectSizes(keys []plumbing.Hash) (map[plumbing.Hash]uint64
 	}
 
 	return newSizes, nil
+}
+
+func (r *Repository) saveSizes(sizes map[plumbing.Hash]uint64) error {
+	fn := filepath.Join(r.repoPath, "blob-sizes.txt")
+	return saveSizes(fn, sizes)
 }
 
 func saveSizes(filename string, sizes map[plumbing.Hash]uint64) error {

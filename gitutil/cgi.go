@@ -145,7 +145,7 @@ func SetupTestRepo(root, name string, fileContents map[string]string) (*TestRepo
 		return nil, err
 	}
 	c := object.Commit{
-		Message:  "msg",
+		Message:  "SetupTestRepo",
 		TreeHash: tr.TreeID,
 	}
 
