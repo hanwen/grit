@@ -720,7 +720,7 @@ func (r *RepoNode) StoreCommit(c *object.Commit, wsUpdate *WorkspaceUpdate) erro
 		r.commit = c
 		r.idTime = wsUpdate.TS
 
-		if err := r.recordWorkspaceChange(before, c, wsUpdate); err != nil {
+		if err := r.recordWorkspaceChange(c, wsUpdate); err != nil {
 			return err
 		}
 	}
@@ -728,10 +728,10 @@ func (r *RepoNode) StoreCommit(c *object.Commit, wsUpdate *WorkspaceUpdate) erro
 	return nil
 }
 
-func (r *RepoNode) recordWorkspaceChange(before, after *object.Commit, wsUpdate *WorkspaceUpdate) error {
+func (r *RepoNode) recordWorkspaceChange(after *object.Commit, wsUpdate *WorkspaceUpdate) error {
 	nowSig := mySig
 	nowSig.When = time.Now()
-
+	var before *object.Commit
 	refname := r.workspaceRef()
 	wsRef, err := r.repo.Reference(refname, true)
 
@@ -748,6 +748,13 @@ func (r *RepoNode) recordWorkspaceChange(before, after *object.Commit, wsUpdate 
 		wsTree, err = r.repo.TreeObject(wsCommit.TreeHash)
 		if err != nil {
 			return err
+		}
+
+		if wsCommit.NumParents() > 1 {
+			before, err = wsCommit.Parent(1)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1084,7 +1091,7 @@ func (r *RepoNode) initializeWorkspace() error {
 		TS:      time.Now(),
 		Message: "initialize workspace",
 	}
-	if err := r.recordWorkspaceChange(nil, emptyCommit, upd); err != nil {
+	if err := r.recordWorkspaceChange(emptyCommit, upd); err != nil {
 		return err
 	}
 	return nil
