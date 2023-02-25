@@ -135,6 +135,7 @@ func TestFS(t *testing.T) {
 
 	update := &gritfs.WorkspaceUpdate{
 		Message:  "bla",
+		TS:       time.Now(),
 		NewState: gritfs.WorkspaceState{AutoSnapshot: true},
 	}
 	res, err := root.RepoNode.Snapshot(update)
@@ -245,6 +246,7 @@ func TestSubmodules(t *testing.T) {
 
 	update := &gritfs.WorkspaceUpdate{
 		Message:  "bla",
+		TS:       time.Now(),
 		NewState: gritfs.WorkspaceState{AutoSnapshot: true},
 	}
 	res, err := root.RepoNode.Snapshot(update)

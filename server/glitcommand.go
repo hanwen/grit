@@ -178,11 +178,20 @@ func LogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int
 		startHash = plumbing.NewHash(args[0])
 		args = args[1:]
 	} else {
-		startHash, err = root.ID()
+		_, err := root.GetRepoNode().Snapshot(&gritfs.WorkspaceUpdate{
+			Message: "log call",
+			TS:      time.Now(),
+			NewState: gritfs.WorkspaceState{
+				AutoSnapshot: true,
+			},
+		})
+
 		if err != nil {
 			ioc.Println("root.gitID: %v", err)
 			return 2, nil
 		}
+
+		startHash = root.ID()
 	}
 
 	opts := &git.LogOptions{
@@ -346,10 +355,7 @@ func commit(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 			if blob, ok := c.Operations().(*gritfs.BlobNode); !ok {
 				return fmt.Errorf("path %q is not a file (%T)", a, c)
 			} else {
-				id, err := blob.ID()
-				if err != nil {
-					return err
-				}
+				id := blob.ID()
 				changes = append(changes,
 					object.TreeEntry{Name: p, Mode: blob.DirMode(), Hash: id})
 			}

@@ -32,18 +32,45 @@ import (
 var emptyBlob = plumbing.NewHash("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391")
 var emptyTree = plumbing.NewHash("4b825dc642cb6eb9a060e54bf8d69288fbee4904")
 
+// snapshotResult is the result for the internal snapshot method, computing a SHA1.
 type snapshotResult struct {
+	// Number of hashes recomputed. Used for verifying incremental updates
 	Recomputed int
 
+	// TS for the hash computed below.
 	TS   time.Time
 	Hash plumbing.Hash
+}
+
+// SnapshotResult is the result for the public RepoNode.Snapshot method.
+type SnapshotResult struct {
+	Recomputed int
+	CheckedOut *object.Commit
+	State      *WorkspaceState
+}
+
+// Properties of a checked out commit
+type WorkspaceState struct {
+	AutoSnapshot bool
+}
+
+// Input to calculating a Snapshot
+type WorkspaceUpdate struct {
+	// Must be acquired as early as possible to avoid loosing
+	// updates in a next run of Snapshot
+	TS       time.Time
+	Message  string
+	Amend    bool
+	NewState WorkspaceState
 }
 
 type Node interface {
 	fs.InodeEmbedder
 
-	idTS(*WorkspaceUpdate) (snapshotResult, error)
-	ID() (plumbing.Hash, error)
+	snapshot(*WorkspaceUpdate) (snapshotResult, error)
+
+	// Return the last calculated Hash. Does not trigger a new snapshot.
+	ID() plumbing.Hash
 	DirMode() filemode.FileMode
 	GetRepoNode() *RepoNode
 	GetTreeNode() *TreeNode
@@ -77,7 +104,7 @@ func (n *BlobNode) GetRepoNode() *RepoNode {
 	return n.root
 }
 
-func (n *BlobNode) idTS(*WorkspaceUpdate) (snapshotResult, error) {
+func (n *BlobNode) snapshot(*WorkspaceUpdate) (snapshotResult, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
@@ -87,12 +114,8 @@ func (n *BlobNode) idTS(*WorkspaceUpdate) (snapshotResult, error) {
 	}, nil
 }
 
-func (n *BlobNode) ID() (plumbing.Hash, error) {
-	upd := &WorkspaceUpdate{
-		Message: "ID call",
-	}
-	r, err := n.idTS(upd)
-	return r.Hash, err
+func (n *BlobNode) ID() plumbing.Hash {
+	return n.blobID
 }
 
 func (n *BlobNode) setID(id plumbing.Hash, mode filemode.FileMode, state *setIDState) error {
@@ -502,11 +525,7 @@ func (n *TreeNode) TreeEntries() ([]object.TreeEntry, error) {
 			continue
 		}
 
-		id, err := ops.ID()
-		if err != nil {
-			return nil, err
-		}
-
+		id := ops.ID()
 		e := object.TreeEntry{
 			Name: k,
 			Mode: ops.DirMode(),
@@ -519,15 +538,11 @@ func (n *TreeNode) TreeEntries() ([]object.TreeEntry, error) {
 	return se, nil
 }
 
-func (n *TreeNode) ID() (id plumbing.Hash, err error) {
-	upd := &WorkspaceUpdate{
-		Message: "ID",
-	}
-	r, err := n.idTS(upd)
-	return r.Hash, err
+func (n *TreeNode) ID() plumbing.Hash {
+	return n.treeID
 }
 
-func (n *TreeNode) idTS(wsUpdate *WorkspaceUpdate) (result snapshotResult, err error) {
+func (n *TreeNode) snapshot(wsUpdate *WorkspaceUpdate) (result snapshotResult, err error) {
 	children := n.Children()
 
 	uptodate := !n.modTime.After(n.idTime) && n.treeID != plumbing.ZeroHash
@@ -538,7 +553,7 @@ func (n *TreeNode) idTS(wsUpdate *WorkspaceUpdate) (result snapshotResult, err e
 			continue
 		}
 
-		r, err := ops.idTS(wsUpdate)
+		r, err := ops.snapshot(wsUpdate)
 		if err != nil {
 			return result, err
 		}
@@ -699,7 +714,7 @@ func init() {
 }
 
 // Returns the commit currently stored in the repo node; does not
-// recompute. Use ID() for that.
+// recompute. Use Snapshot() for that.
 func (r *RepoNode) GetCommit() object.Commit {
 	return *r.commit
 }
@@ -727,17 +742,6 @@ func (r *RepoNode) StoreCommit(c *object.Commit, wsUpdate *WorkspaceUpdate) erro
 	}
 
 	return nil
-}
-
-type WorkspaceState struct {
-	AutoSnapshot bool
-}
-
-type WorkspaceUpdate struct {
-	TS       time.Time
-	Message  string
-	Amend    bool
-	NewState WorkspaceState
 }
 
 func (r *RepoNode) recordWorkspaceChange(before, after *object.Commit, wsUpdate *WorkspaceUpdate) error {
@@ -807,12 +811,11 @@ func (r *RepoNode) recordWorkspaceChange(before, after *object.Commit, wsUpdate 
 	return nil
 }
 
-func (r *RepoNode) ID() (plumbing.Hash, error) {
-	res, err := r.idTS(nil)
-	return res.Hash, err
+func (r *RepoNode) ID() plumbing.Hash {
+	return r.commit.Hash
 }
 
-func (r *RepoNode) idTS(wsUpdate *WorkspaceUpdate) (result snapshotResult, err error) {
+func (r *RepoNode) snapshot(wsUpdate *WorkspaceUpdate) (result snapshotResult, err error) {
 	_, prevState, err := r.ReadWorkspaceCommit()
 	if wsUpdate == nil {
 		wsUpdate = &WorkspaceUpdate{
@@ -828,7 +831,7 @@ func (r *RepoNode) idTS(wsUpdate *WorkspaceUpdate) (result snapshotResult, err e
 	}
 
 	lastTree := r.commit.TreeHash
-	treeUpdate, err := r.TreeNode.idTS(wsUpdate)
+	treeUpdate, err := r.TreeNode.snapshot(wsUpdate)
 	if err != nil {
 		return result, err
 	}
@@ -998,18 +1001,12 @@ func (n *RepoNode) setID(id plumbing.Hash, mode filemode.FileMode, state *setIDS
 	return nil
 }
 
-type SnapshotResult struct {
-	Recomputed int
-	CheckedOut *object.Commit
-	State      *WorkspaceState
-}
-
 func (n *RepoNode) Snapshot(upd *WorkspaceUpdate) (SnapshotResult, error) {
 	var zeroTS time.Time
 	if upd.TS == zeroTS {
 		return SnapshotResult{}, fmt.Errorf("must set TS in WorkspaceUpdate")
 	}
-	r, err := n.idTS(upd)
+	r, err := n.snapshot(upd)
 	if err != nil {
 		return SnapshotResult{}, err
 	}
