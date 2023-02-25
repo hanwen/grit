@@ -750,14 +750,15 @@ func (r *RepoNode) recordWorkspaceChange(after *object.Commit, wsUpdate *Workspa
 			return err
 		}
 
-		if wsCommit.NumParents() > 1 {
-			before, err = wsCommit.Parent(1)
-			if err != nil {
-				return err
-			}
+		before, err = wsCommit.Parent(wsCommit.NumParents() - 1)
+		if err != nil {
+			return err
 		}
 	}
 
+	if before != nil && before.Hash == after.Hash {
+		return nil
+	}
 	wsBlob, err := json.Marshal(&wsUpdate.NewState)
 	if err != nil {
 		return err
@@ -915,7 +916,7 @@ func (n *RepoNode) currentSubmods(commit *object.Commit) (map[string]*submoduleS
 }
 
 func (n *RepoNode) setID(id plumbing.Hash, mode filemode.FileMode, state *setIDState) error {
-	if n.commit.Hash == id {
+	if n.commit != nil && n.commit.Hash == id {
 		return nil
 	}
 
@@ -1021,13 +1022,12 @@ func NewRoot(cas *CAS, repo *repo.Repository, workspaceName string) (*RepoNode, 
 
 	_, err := repo.Reference(root.workspaceRef(), true)
 	if err == plumbing.ErrReferenceNotFound {
+		err = nil
 		if err := root.initializeWorkspace(); err != nil {
 			return nil, err
 		}
 	}
 
-	// todo - should be in OnAdd
-	root.commit, _, err = root.ReadWorkspaceCommit()
 	return root, err
 }
 
@@ -1135,7 +1135,10 @@ func (r *RepoNode) OnAdd(ctx context.Context) {
 }
 
 func (r *RepoNode) onAdd(ctx context.Context) error {
-	want := r.commit.Hash
-	r.commit.Hash = plumbing.ZeroHash
-	return r.SetID(want, time.Now())
+	// todo - should be in OnAdd
+	want, _, err := r.ReadWorkspaceCommit()
+	if err != nil {
+		return err
+	}
+	return r.SetID(want.Hash, time.Now())
 }

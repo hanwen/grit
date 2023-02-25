@@ -382,6 +382,10 @@ func TestRemount(t *testing.T) {
 	}
 	defer server.Unmount()
 
+	out := testCommand(t, []string{"wslog"}, "", root.RepoNode)
+	if strings.Count(string(out), "initial commit") != 1 {
+		t.Errorf("got %q, want 'initial commit' once", out)
+	}
 	testCommand(t, []string{"checkout", tr.CommitID.String()}, "", root.RepoNode)
 	content := []byte("different")
 	if err := ioutil.WriteFile(mntDir+"/file.txt", content, 0644); err != nil {
