@@ -19,19 +19,20 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/hanwen/gritfs/gitutil"
 	"github.com/hanwen/gritfs/protov2"
 )
 
 var noSubmodules = &config.Modules{}
 
 type Repository struct {
-	*git.Repository
 	repoPath  string
 	repoURL   *url.URL
 	gitClient *protov2.Client
 
 	mu    sync.Mutex
 	sizes map[plumbing.Hash]uint64
+	repo  *git.Repository
 }
 
 func (r *Repository) String() string {
@@ -49,8 +50,14 @@ func (r *Repository) CachedBlobSize(id plumbing.Hash) (uint64, bool) {
 	return sz, ok
 }
 
+func (r *Repository) SaveBytes(b []byte) (id plumbing.Hash, err error) {
+	return r.SaveBlob(bytes.NewBuffer(b))
+}
+
 func (r *Repository) SaveBlob(rd io.Reader) (id plumbing.Hash, err error) {
-	enc := r.Storer.NewEncodedObject()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	enc := r.repo.Storer.NewEncodedObject()
 	enc.SetType(plumbing.BlobObject)
 	w, err := enc.Writer()
 	if err != nil {
@@ -65,7 +72,7 @@ func (r *Repository) SaveBlob(rd io.Reader) (id plumbing.Hash, err error) {
 		return id, err
 	}
 
-	id, err = r.Storer.SetEncodedObject(enc)
+	id, err = r.repo.Storer.SetEncodedObject(enc)
 	if err != nil {
 		return id, err
 	}
@@ -73,8 +80,6 @@ func (r *Repository) SaveBlob(rd io.Reader) (id plumbing.Hash, err error) {
 	if err := r.saveSizes(map[plumbing.Hash]uint64{id: uint64(sz)}); err != nil {
 		return id, err
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.sizes[id] = uint64(sz)
 	return id, nil
 }
@@ -177,7 +182,7 @@ func (r *Repository) maybeFetchCommit(id plumbing.Hash) (*object.Commit, error) 
 		opts.Filter = ""
 	}
 
-	if err = r.gitClient.Fetch(r.Repository.Storer, opts); err != nil {
+	if err = r.gitClient.Fetch(r.repo.Storer, opts); err != nil {
 		return nil, err
 	}
 
@@ -250,7 +255,7 @@ func (r *Repository) FetchCommit(commitID plumbing.Hash) (commit *object.Commit,
 }
 
 func (r *Repository) BlobObject(id plumbing.Hash) (*object.Blob, error) {
-	obj, err := r.Repository.BlobObject(id)
+	obj, err := r.repo.BlobObject(id)
 	if err == plumbing.ErrObjectNotFound {
 		if err := r.setClient(); err != nil {
 			return nil, err
@@ -259,14 +264,59 @@ func (r *Repository) BlobObject(id plumbing.Hash) (*object.Blob, error) {
 			Progress: os.Stderr,
 			Want:     []plumbing.Hash{id},
 		}
-		if err := r.gitClient.Fetch(r.Storer, opts); err != nil {
+		if err := r.gitClient.Fetch(r.repo.Storer, opts); err != nil {
 			return nil, err
 		}
 
-		obj, err = r.Repository.BlobObject(id)
+		obj, err = r.repo.BlobObject(id)
 	}
 
 	return obj, err
+}
+
+func (r *Repository) CommitObject(id plumbing.Hash) (*object.Commit, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.repo.CommitObject(id)
+}
+
+func (r *Repository) SaveCommit(c *object.Commit) (plumbing.Hash, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return gitutil.SaveCommit(r.repo.Storer, c)
+}
+
+func (r *Repository) TreeObject(id plumbing.Hash) (*object.Tree, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.repo.TreeObject(id)
+}
+
+func (r *Repository) PatchTree(tr *object.Tree, se []object.TreeEntry) (plumbing.Hash, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return gitutil.PatchTree(r.repo.Storer, tr, se)
+}
+
+func (r *Repository) Reference(ref plumbing.ReferenceName, res bool) (*plumbing.Reference, error) {
+	return r.repo.Reference(ref, res)
+}
+
+func (r *Repository) SetReference(ref *plumbing.Reference) error {
+	return r.repo.Storer.SetReference(ref)
+}
+
+func (r *Repository) Log(opts *git.LogOptions) (object.CommitIter, error) {
+	// todo locking?
+	return r.repo.Log(opts)
+}
+
+func (r *Repository) SaveTree(se []object.TreeEntry) (plumbing.Hash, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return gitutil.SaveTree(r.repo.Storer, se)
 }
 
 func NewRepo(
@@ -284,10 +334,10 @@ func NewRepo(
 	}
 
 	return &Repository{
-		Repository: r,
-		repoPath:   repoPath,
-		repoURL:    repoURL,
-		sizes:      sizes,
+		repo:     r,
+		repoPath: repoPath,
+		repoURL:  repoURL,
+		sizes:    sizes,
 	}, nil
 }
 

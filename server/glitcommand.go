@@ -225,11 +225,12 @@ func LogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int
 					parent = nil
 				}
 			} else {
-				parent.TreeHash, err = gitutil.SaveTree(repo.Storer, nil)
+				parent.TreeHash, err = repo.SaveTree(nil)
+
 				if err != nil {
 					return err
 				}
-				emptyID, err := gitutil.SaveCommit(repo.Storer, parent)
+				emptyID, err := repo.SaveCommit(parent)
 				if err != nil {
 					return err
 				}
@@ -365,7 +366,7 @@ func commit(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 		if err != nil {
 			return err
 		}
-		id, err := gitutil.PatchTree(repoNode.Repository().Storer, prevTree, changes)
+		id, err := repoNode.Repository().PatchTree(prevTree, changes)
 		commit.TreeHash = id
 	}
 

@@ -561,7 +561,7 @@ func (n *TreeNode) snapshot(wsUpdate *WorkspaceUpdate) (result snapshotResult, e
 		}, nil
 	}
 
-	n.treeID, err = gitutil.SaveTree(n.root.repo.Storer, se)
+	n.treeID, err = n.root.repo.SaveTree(se)
 	n.idTime = wsUpdate.TS
 
 	result.Recomputed++
@@ -706,7 +706,7 @@ func (r *RepoNode) GetCommit() object.Commit {
 func (r *RepoNode) StoreCommit(c *object.Commit, wsUpdate *WorkspaceUpdate) error {
 	before := r.commit
 
-	commitID, err := gitutil.SaveCommit(r.repo.Storer, c)
+	commitID, err := r.repo.SaveCommit(c)
 	// decode the object again so it has a Storer reference.
 	c, err = r.repo.CommitObject(commitID)
 	if err != nil {
@@ -763,7 +763,7 @@ func (r *RepoNode) recordWorkspaceChange(after *object.Commit, wsUpdate *Workspa
 	if err != nil {
 		return err
 	}
-	wsBlobID, err := gitutil.SaveBlob(r.repo.Storer, wsBlob)
+	wsBlobID, err := r.repo.SaveBytes(wsBlob)
 	if err != nil {
 		return err
 	}
@@ -775,7 +775,7 @@ func (r *RepoNode) recordWorkspaceChange(after *object.Commit, wsUpdate *Workspa
 		})
 	}
 
-	afterTreeID, err := gitutil.PatchTree(r.repo.Storer, wsTree, entries)
+	afterTreeID, err := r.repo.PatchTree(wsTree, entries)
 	if err != nil {
 		return err
 	}
@@ -792,12 +792,12 @@ func (r *RepoNode) recordWorkspaceChange(after *object.Commit, wsUpdate *Workspa
 		wsCommit.ParentHashes = append(wsCommit.ParentHashes, wsRef.Hash())
 	}
 	wsCommit.ParentHashes = append(wsCommit.ParentHashes, after.Hash)
-	wsCommitID, err := gitutil.SaveCommit(r.repo.Storer, wsCommit)
+	wsCommitID, err := r.repo.SaveCommit(wsCommit)
 	if err != nil {
 		return err
 	}
 	wsRef = plumbing.NewHashReference(refname, wsCommitID)
-	if err := r.repo.Storer.SetReference(wsRef); err != nil {
+	if err := r.repo.SetReference(wsRef); err != nil {
 		return err
 	}
 	return nil
@@ -1069,7 +1069,7 @@ func (r *RepoNode) ReadWorkspaceCommit() (commit *object.Commit, state *Workspac
 }
 
 func (r *RepoNode) initializeWorkspace() error {
-	treeID, err := gitutil.SaveTree(r.repo.Storer, nil)
+	treeID, err := r.repo.SaveTree(nil)
 	if err != nil {
 		return err
 	}
@@ -1082,7 +1082,7 @@ func (r *RepoNode) initializeWorkspace() error {
 		Committer: nowSig,
 		Author:    nowSig,
 	}
-	commitID, err := gitutil.SaveCommit(r.repo.Storer, emptyCommit)
+	commitID, err := r.repo.SaveCommit(emptyCommit)
 	if err != nil {
 		return err
 	}
