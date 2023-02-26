@@ -128,11 +128,11 @@ func TestFS(t *testing.T) {
 	}
 
 	ioc = &testIOC{}
-	exit, err = RunCommand([]string{"log", "-n", "1"}, "", ioc, root.RepoNode)
-	if exit != 0 || err != nil {
-		t.Errorf("exit %d, %v", exit, err)
-	}
+	out := testCommand(t, []string{"log", "-n", "1", "-p"}, "", root.RepoNode)
 
+	if got, want := string(out), "+blabla\n"; !strings.Contains(got, want) {
+		t.Errorf("got %s, want substring %q", got, want)
+	}
 	update := &gritfs.WorkspaceUpdate{
 		Message:  "bla",
 		TS:       time.Now(),
@@ -259,6 +259,10 @@ func TestSubmodules(t *testing.T) {
 		t.Errorf("writing file should have changed commit ID")
 	}
 
+	out := testCommand(t, []string{"log", "-p"}, "", root.RepoNode)
+	if got, want := string(out), "+blabla\n"; !strings.Contains(got, want) {
+		t.Errorf("got %s, want substr %q", got, want)
+	}
 	{
 		ioc := &testIOC{}
 		exit, err := RunCommand([]string{"checkout", tr.CommitID.String()}, "", ioc, root.RepoNode)

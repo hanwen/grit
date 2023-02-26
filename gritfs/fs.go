@@ -880,7 +880,7 @@ func inodeWalk(n *fs.Inode, p string) *fs.Inode {
 }
 
 func (n *RepoNode) currentSubmods(commit *object.Commit) (map[string]*submoduleState, error) {
-	cfg, err := n.repo.SubmoduleConfig(commit)
+	cfg, err := n.repo.SubmoduleConfigByCommit(commit)
 	if err != nil {
 		return nil, err
 	}

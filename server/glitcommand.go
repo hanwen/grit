@@ -244,13 +244,17 @@ func LogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int
 				return err
 			}
 
-			p, err := parent.Patch(c)
+			chs, err := root.GetRepoNode().Repository().DiffRecursiveByCommit(parent, c)
 			if err != nil {
 				log.Println("patch", parent, c, err)
 				return err
 			}
-
 			ioc.Println("")
+			p, err := chs.Patch()
+			if err != nil {
+				log.Println("patch", parent, c, err)
+				return err
+			}
 			// should filter patch by paths as well?
 			p.Encode(ioc)
 		}

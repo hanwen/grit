@@ -30,9 +30,10 @@ type Repository struct {
 	repoURL   *url.URL
 	gitClient *protov2.Client
 
-	mu    sync.Mutex
-	sizes map[plumbing.Hash]uint64
-	repo  *git.Repository
+	mu         sync.Mutex
+	sizes      map[plumbing.Hash]uint64
+	repo       *git.Repository
+	submodules map[string]*Repository
 }
 
 func (r *Repository) String() string {
@@ -84,7 +85,7 @@ func (r *Repository) SaveBlob(rd io.Reader) (id plumbing.Hash, err error) {
 	return id, nil
 }
 
-func (r *Repository) SubmoduleConfig(commit *object.Commit) (*config.Modules, error) {
+func (r *Repository) SubmoduleConfigByCommit(commit *object.Commit) (*config.Modules, error) {
 	// Can't use commit.FindFile(). .gitmodules might be large,
 	// and must be faulted in by calling our BlobObject()
 	// implementation
@@ -92,6 +93,10 @@ func (r *Repository) SubmoduleConfig(commit *object.Commit) (*config.Modules, er
 	if err != nil {
 		return nil, err
 	}
+	return r.SubmoduleConfig(tree)
+}
+
+func (r *Repository) SubmoduleConfig(tree *object.Tree) (*config.Modules, error) {
 
 	entry, err := tree.FindEntry(".gitmodules")
 	if err == object.ErrEntryNotFound {
@@ -132,7 +137,103 @@ func SubmoduleByPath(mods *config.Modules, path string) *config.Submodule {
 	return nil
 }
 
+func (r *Repository) DiffRecursiveByCommit(from, to *object.Commit) (object.Changes, error) {
+	t1, err := from.Tree()
+	if err != nil {
+		return nil, err
+	}
+	t2, err := to.Tree()
+	if err != nil {
+		return nil, err
+	}
+
+	return r.DiffRecursive(t1, t2)
+}
+
+func (r *Repository) DiffRecursive(from, to *object.Tree) (object.Changes, error) {
+	var result []*object.Change
+
+	chs, err := object.DiffTree(from, to)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg, err := r.SubmoduleConfig(to)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, ch := range chs {
+		if ch.From.TreeEntry.Mode != ch.To.TreeEntry.Mode && (ch.To.TreeEntry.Mode == filemode.Submodule ||
+			ch.From.TreeEntry.Mode == filemode.Submodule) {
+			return nil, fmt.Errorf("%s=>%s mixed submodule change not supported", ch.From.Name, ch.To.Name)
+		}
+
+		if ch.To.TreeEntry.Mode != filemode.Submodule {
+			result = append(result, ch)
+			continue
+		}
+		sm := SubmoduleByPath(cfg, ch.To.Name)
+		if sm == nil {
+			return nil, fmt.Errorf("no submodule for %q", ch.To.Name)
+		}
+
+		subRepo, err := r.OpenSubmodule(sm)
+		if err != nil {
+			return nil, err
+		}
+
+		h1 := ch.From.TreeEntry.Hash
+		h2 := ch.To.TreeEntry.Hash
+
+		c1, err := subRepo.CommitObject(h1)
+		if err != nil {
+			return nil, err
+		}
+		c2, err := subRepo.CommitObject(h2)
+		if err != nil {
+			return nil, err
+		}
+
+		t1, err := c1.Tree()
+		if err != nil {
+			return nil, err
+		}
+		t2, err := c2.Tree()
+		if err != nil {
+			return nil, err
+		}
+
+		subChs, err := subRepo.DiffRecursive(t1, t2)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, subCh := range subChs {
+			// Can't tweak subCh.{from,to}.name ; the name
+			// is used to form patch contents.
+			result = append(result, subCh)
+		}
+	}
+
+	return result, nil
+}
+
 func (r *Repository) OpenSubmodule(submod *config.Submodule) (*Repository, error) {
+	subURL, err := r.repoURL.Parse(submod.URL)
+	if err != nil {
+		return nil, err
+	}
+
+	{
+		r.mu.Lock()
+		sr, ok := r.submodules[subURL.String()]
+		r.mu.Unlock()
+
+		if ok {
+			return sr, nil
+		}
+	}
 	repoPath := filepath.Join(r.repoPath, "modules", submod.Name)
 	subRepo, err := git.PlainOpen(repoPath)
 	if err != nil {
@@ -147,14 +248,14 @@ func (r *Repository) OpenSubmodule(submod *config.Submodule) (*Repository, error
 		return nil, err
 	}
 
-	subURL, err := r.repoURL.Parse(submod.URL)
-	if err != nil {
-		return nil, err
-	}
 	sr, err := NewRepo(subRepo, repoPath, subURL)
 	if err != nil {
 		return nil, err
 	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.submodules[subURL.String()] = sr
 	return sr, nil
 }
 
@@ -206,7 +307,7 @@ func (r *Repository) FetchCommit(commitID plumbing.Hash) (commit *object.Commit,
 		return nil, fmt.Errorf("maybeFetchCommit: %v", err)
 	}
 
-	mods, err := r.SubmoduleConfig(commit)
+	mods, err := r.SubmoduleConfigByCommit(commit)
 	if err != nil {
 		return nil, fmt.Errorf("SubmoduleConfig: %v", err)
 	}
@@ -334,10 +435,11 @@ func NewRepo(
 	}
 
 	return &Repository{
-		repo:     r,
-		repoPath: repoPath,
-		repoURL:  repoURL,
-		sizes:    sizes,
+		repo:       r,
+		repoPath:   repoPath,
+		repoURL:    repoURL,
+		sizes:      sizes,
+		submodules: map[string]*Repository{},
 	}, nil
 }
 
