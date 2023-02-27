@@ -879,7 +879,7 @@ func inodeWalk(n *fs.Inode, p string) *fs.Inode {
 	return n
 }
 
-func (n *RepoNode) currentSubmods(commit *object.Commit) (map[string]*submoduleState, error) {
+func (n *RepoNode) currentSubmods(commit *object.Commit, filter bool) (map[string]*submoduleState, error) {
 	cfg, err := n.repo.SubmoduleConfigByCommit(commit)
 	if err != nil {
 		return nil, err
@@ -889,8 +889,10 @@ func (n *RepoNode) currentSubmods(commit *object.Commit) (map[string]*submoduleS
 	for _, sm := range cfg.Submodules {
 		subNode := inodeWalk(n.EmbeddedInode(), sm.Path)
 		if subNode == nil {
-			result[sm.Path] = &submoduleState{
-				config: sm,
+			if !filter {
+				result[sm.Path] = &submoduleState{
+					config: sm,
+				}
 			}
 			continue
 		}
@@ -925,7 +927,7 @@ func (n *RepoNode) setID(id plumbing.Hash, mode filemode.FileMode, state *setIDS
 		return err
 	}
 
-	state.submodules, err = n.currentSubmods(commit)
+	state.submodules, err = n.currentSubmods(commit, false)
 	if err != nil {
 		return err
 	}

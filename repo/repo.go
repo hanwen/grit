@@ -166,7 +166,7 @@ func (r *Repository) DiffRecursive(from, to *object.Tree) (object.Changes, error
 	for _, ch := range chs {
 		if ch.From.TreeEntry.Mode != ch.To.TreeEntry.Mode && (ch.To.TreeEntry.Mode == filemode.Submodule ||
 			ch.From.TreeEntry.Mode == filemode.Submodule) {
-			return nil, fmt.Errorf("%s=>%s mixed submodule change not supported", ch.From.Name, ch.To.Name)
+			return nil, fmt.Errorf("%q=>%q mixed submodule change not supported", ch.From.Name, ch.To.Name)
 		}
 
 		if ch.To.TreeEntry.Mode != filemode.Submodule {

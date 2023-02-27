@@ -197,6 +197,11 @@ func TestSubmodules(t *testing.T) {
   path = sub2
   url = ../sub2
   branch = .
+
+[submodule "sub3"]
+  path = sub3
+  url = ../sub2
+  branch = .
 `,
 		"a":     "xyz",
 		"b/c":   "xyz",
