@@ -537,9 +537,16 @@ func (n *TreeNode) snapshot(wsUpdate *WorkspaceUpdate) (result snapshotResult, e
 			continue
 		}
 
-		r, err := ops.snapshot(wsUpdate)
-		if err != nil {
-			return result, err
+		var r snapshotResult
+		if repo, ok := ops.(*RepoNode); ok {
+			// RepoNode.snapshot did this in parallel already
+			r.Hash = repo.ID()
+			r.TS = repo.idTime // todo - locking
+		} else {
+			r, err = ops.snapshot(wsUpdate)
+			if err != nil {
+				return result, err
+			}
 		}
 		result.Recomputed += r.Recomputed
 		e := object.TreeEntry{
@@ -822,6 +829,34 @@ func (r *RepoNode) snapshot(wsUpdate *WorkspaceUpdate) (result snapshotResult, e
 		}
 	}
 
+	if submods, err := r.currentSubmods(r.commit, true); err != nil {
+		return result, err
+	} else {
+		type subSnapResult struct {
+			result snapshotResult
+			err    error
+		}
+
+		out := make(chan subSnapResult, len(submods))
+		for _, submodState := range submods {
+			go func(ss *submoduleState) {
+				rs, err := ss.node.snapshot(wsUpdate)
+				out <- subSnapResult{
+					result: rs,
+					err:    err,
+				}
+			}(submodState)
+		}
+		for range submods {
+			ssr := <-out
+			if ssr.err != nil {
+				return result, ssr.err
+			}
+
+			result.Recomputed += ssr.result.Recomputed
+		}
+	}
+
 	lastTree := r.commit.TreeHash
 	treeUpdate, err := r.TreeNode.snapshot(wsUpdate)
 	if err != nil {
@@ -858,7 +893,7 @@ func (r *RepoNode) snapshot(wsUpdate *WorkspaceUpdate) (result snapshotResult, e
 	result = snapshotResult{
 		Hash:       r.commit.Hash,
 		TS:         r.idTime,
-		Recomputed: treeUpdate.Recomputed,
+		Recomputed: treeUpdate.Recomputed + result.Recomputed,
 	}
 	return result, nil
 }
