@@ -1,3 +1,5 @@
 *~
 cmd/fuse/fuse
-cmd/glit/glit
+cmd/grit/grit
+fuse
+grit
