@@ -455,13 +455,31 @@ func (r *Repository) setClient() error {
 	return nil
 }
 
+func (r *Repository) objectSizesFromBlobs(keys []plumbing.Hash) (map[plumbing.Hash]uint64, error) {
+	res := map[plumbing.Hash]uint64{}
+	for _, k := range keys {
+		b, err := r.repo.BlobObject(k)
+		if err != nil {
+			// todo: should fetch missing blobs
+			return nil, err
+		}
+		res[k] = uint64(b.Size)
+	}
+	return res, nil
+}
+
 func (r *Repository) ObjectSizes(keys []plumbing.Hash) (map[plumbing.Hash]uint64, error) {
 	if len(keys) == 0 {
 		return nil, nil
 	}
+
 	if err := r.setClient(); err != nil {
 		return nil, err
 	}
+	if !r.gitClient.HasCap("object-info") {
+		return r.objectSizesFromBlobs(keys)
+	}
+
 	log.Printf("Fetching %d sizes for %s", len(keys), r.repoURL)
 	newSizes, err := r.gitClient.ObjectInfo(keys)
 	if err != nil {
