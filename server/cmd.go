@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/pprof"
 	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
@@ -70,6 +71,14 @@ func NewCommandServer(cas *gritfs.CAS, repo *repo.Repository, workspaceName stri
 func (s *CommandServer) Exec(req *CommandRequest, rep *CommandReply) error {
 	start := time.Now()
 	log.Printf("executing %#v", req)
+	if req.Profile != "" {
+		f, err := os.Create(req.Profile)
+		if err != nil {
+			return err
+		}
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
 	ioc, err := NewIOClientAPI(req.RPCSocket)
 	if err != nil {
 		return err
@@ -86,6 +95,7 @@ type CommandRequest struct {
 	// relative to top of FS
 	Dir       string
 	RPCSocket string
+	Profile   string
 }
 
 type CommandReply struct {
@@ -252,7 +262,7 @@ func FindGritSocket(startDir string) (socket string, topdir string, err error) {
 	return "", "", fmt.Errorf("grit socket not found")
 }
 
-func ClientRun(socket string, args []string, dir string) (int, error) {
+func ClientRun(socket string, args []string, dir, profile string) (int, error) {
 	srv, err := NewIOServer()
 	if err != nil {
 		return 0, err
@@ -267,6 +277,7 @@ func ClientRun(socket string, args []string, dir string) (int, error) {
 		Args:      args,
 		Dir:       dir,
 		RPCSocket: srv.Socket,
+		Profile:   profile,
 	}
 	rep := CommandReply{}
 

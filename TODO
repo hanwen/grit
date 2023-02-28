@@ -1,13 +1,13 @@
 * commit across submodules
 
+* pack loose objects
+
 * upload to gerrit
 * push protocol
 
-* parallel incremental snapshot
 * http rate limiting.
 
 * cherry-pick (apply)
 * merge
 * store conflicts (JJ)
 
-* plain FS client

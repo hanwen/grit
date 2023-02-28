@@ -15,6 +15,7 @@ import (
 
 func main() {
 	dir := flag.String("dir", "", "grit checkout; defaults to $CWD")
+	profile := flag.String("profile", "", "dump profile date to this file")
 	flag.Parse()
 
 	if *dir == "" {
@@ -39,7 +40,7 @@ func main() {
 	if relCWD == "." {
 		relCWD = ""
 	}
-	code, err := server.ClientRun(sock, flag.Args(), relCWD)
+	code, err := server.ClientRun(sock, flag.Args(), relCWD, *profile)
 	if err != nil {
 		log.Fatal(err)
 	}
