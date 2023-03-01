@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/format/packfile"
@@ -400,6 +401,7 @@ type FetchOptions struct {
 }
 
 func (cl *Client) Fetch(storer storage.Storer, opts *FetchOptions) error {
+	start := time.Now()
 	fetchReq := &FetchRequest{
 		Done:   true,
 		Want:   opts.Want,
@@ -487,5 +489,7 @@ responseLoop:
 	if errorBuf.Len() > 0 {
 		return errors.New(errorBuf.String())
 	}
+
+	log.Printf("%s: fetch took %s", cl.url, time.Now().Sub(start))
 	return packfile.UpdateObjectStorage(storer, pack)
 }
