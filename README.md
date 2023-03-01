@@ -34,3 +34,9 @@ By implementing submodule support natively, we can provide a first-class support
 EXAMPLE
 -------
 See [example session](docs/example.md).
+
+
+PERFORMANCE
+-----------
+See [performance numbers](docs/performance.md).
+
