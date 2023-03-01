@@ -3,3 +3,4 @@ cmd/fuse/fuse
 cmd/grit/grit
 fuse
 grit
+main
