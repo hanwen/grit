@@ -25,10 +25,12 @@ import (
 	"github.com/hanwen/gritfs/repo"
 )
 
+// CommandServer serves RPC calls
 type CommandServer struct {
 	root *Root
 }
 
+// Root is a RepoNode that makes .grit socket available
 type Root struct {
 	*gritfs.RepoNode
 	Socket string
@@ -95,7 +97,9 @@ type CommandRequest struct {
 	// relative to top of FS
 	Dir       string
 	RPCSocket string
-	Profile   string
+
+	// Write CPU profile data.
+	Profile string
 }
 
 type CommandReply struct {
@@ -119,6 +123,13 @@ type EditReply struct {
 	Data []byte
 }
 
+// Interface for communication back to client invocation
+type IOClientAPI interface {
+	Edit(name string, data []byte) ([]byte, error)
+	Write(data []byte) (n int, err error)
+}
+
+// RPC client for talking back to command-line process
 type IOClient struct {
 	IOClientAPI
 }
@@ -157,11 +168,6 @@ func NewIOClientAPI(sock string) (IOClientAPI, error) {
 		client: client,
 	}
 	return ioClient, nil
-}
-
-type IOClientAPI interface {
-	Edit(name string, data []byte) ([]byte, error)
-	Write(data []byte) (n int, err error)
 }
 
 type rpcIOClient struct {
@@ -262,6 +268,7 @@ func FindGritSocket(startDir string) (socket string, topdir string, err error) {
 	return "", "", fmt.Errorf("grit socket not found")
 }
 
+// Runs a command on the server for use in the command-line program
 func ClientRun(socket string, args []string, dir, profile string) (int, error) {
 	srv, err := NewIOServer()
 	if err != nil {

@@ -25,6 +25,7 @@ import (
 
 var noSubmodules = &config.Modules{}
 
+// Repository is a thread-safe wrapper around git.Repository
 type Repository struct {
 	repoPath  string
 	repoURL   *url.URL
