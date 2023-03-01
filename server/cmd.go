@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime/pprof"
+	"syscall"
 	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
@@ -72,6 +73,11 @@ func NewCommandServer(cas *gritfs.CAS, repo *repo.Repository, workspaceName stri
 
 func (s *CommandServer) Exec(req *CommandRequest, rep *CommandReply) error {
 	start := time.Now()
+
+	var startUsage, endUsage syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &startUsage); err != nil {
+		return fmt.Errorf("Getrusage: %v", err)
+	}
 	log.Printf("executing %#v", req)
 	if req.Profile != "" {
 		f, err := os.Create(req.Profile)
@@ -87,7 +93,16 @@ func (s *CommandServer) Exec(req *CommandRequest, rep *CommandReply) error {
 	}
 	exit, err := RunCommand(req.Args, req.Dir, ioc, s.root.RepoNode)
 	rep.ExitCode = exit
-	log.Printf("finished in %v", time.Now().Sub(start))
+
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &endUsage); err != nil {
+		return fmt.Errorf("Getrusage: %v", err)
+	}
+
+	ns := endUsage.Utime.Nano() - startUsage.Utime.Nano()
+	wall := time.Now().Sub(start)
+	user := time.Duration(ns)
+
+	log.Printf("finished in %v; utilization %d%%. ", time.Now().Sub(start), int64(100*user/wall))
 	return err
 }
 
