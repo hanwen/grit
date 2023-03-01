@@ -2,6 +2,7 @@
 
 
 TL;DR
+-----
 
 * A writable FUSE filesystem that stores data in Git
 
@@ -15,6 +16,7 @@ TL;DR
 
 
 VISION
+------
 
 By storing all data in Git (and doing away with the worktree and
 index), we can provide a filesystem-in-the-cloud that only needs a git
@@ -30,48 +32,5 @@ By implementing submodule support natively, we can provide a first-class support
 
 
 EXAMPLE
-
-To start the daemon,
-
-```
-git init --bare /tmp/g
-mkdir /tmp/x
-go run ./cmd/fuse/main.go -url https://gerrit.googlesource.com/gerrit -workspace ws1 -repo /tmp/gerrit/.git  /tmp/x
-```
-
-To interact with the checkout
-
-```
-
-# List top commit
-go run ./cmd/grit/main.go -dir /tmp/x log
-
-# List 3 commits, with their patches
-go run ./cmd/grit/main.go -dir /tmp/x log -p -n 3
-
-# List 3 commits of a submodule
-go run ./cmd/grit/main.go -dir /tmp/x/modules/jgit log -n 3
-
-# List files in tree
-go run ./cmd/grit/main.go -dir /tmp/x ls-tree -r
-
-# Checkout is writable
-echo hoi > /tmp/x/modules/jgit/foobar
-ls -l /tmp/x/modules/jgit/foobar
-
-# Writes are automatically checkpointed
-go run ./cmd/grit/main.go -dir /tmp/x/modules/jgit log -p
-
-# A change in a submodule immediately affects the superproject
-go run ./cmd/grit/main.go -dir /tmp/x log
-
-# A second write amends the checkpointed commit
-echo hoi > /tmp/x/modules/jgit/foobar2
-go run ./cmd/grit/main.go -dir /tmp/x/modules/jgit log -p -n 2
-
-# Amend the commit message
-go run ./cmd/grit/main.go -dir /tmp/x/modules/jgit amend
-```
-
-
-
+-------
+See [example session](docs/example.md).
