@@ -33,12 +33,11 @@ import (
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"github.com/hanwen/gritfs/gritfs"
-	"github.com/hanwen/gritfs/repo"
 )
 
 // CommandServer serves RPC calls
 type CommandServer struct {
-	invoker Invoker
+	root *gritfs.RepoNode
 }
 
 // RPC client for talking back to command-line process
@@ -50,18 +49,8 @@ type Call struct {
 	Root *gritfs.RepoNode
 }
 
-type Invoker interface {
-	Invoke(*Call) error
-}
-
-// Root is a RepoNode that makes .grit socket available
-type Root struct {
-	*gritfs.RepoNode
-	Socket string
-}
-
-func (root *Root) Invoke(call *Call) error {
-	return InvokeRepoNode(call, root.RepoNode)
+func (cs *CommandServer) Invoke(call *Call) error {
+	return InvokeRepoNode(call, cs.root)
 }
 
 func InvokeRepoNode(call *Call, rn *gritfs.RepoNode) error {
@@ -87,38 +76,27 @@ func InvokeRepoNode(call *Call, rn *gritfs.RepoNode) error {
 	return fn(call)
 }
 
-func (r *Root) OnAdd(ctx context.Context) {
-	r.RepoNode.OnAdd(ctx)
-	ch := r.NewPersistentInode(ctx, &fs.MemSymlink{
-		Data: []byte(r.Socket),
+func StartCommandServer(root *gritfs.RepoNode, server *fuse.Server) error {
+	server.WaitMount()
+	l, sock, err := newSocket()
+	if err != nil {
+		return err
+	}
+
+	ch := root.NewPersistentInode(context.Background(), &fs.MemSymlink{
+		Data: []byte(sock),
 	}, fs.StableAttr{Mode: fuse.S_IFLNK})
-	r.AddChild(".grit", ch, true)
-}
-
-func NewCommandServer(cas *gritfs.CAS, repo *repo.Repository, workspaceName string) (*Root, error) {
-	r, err := gritfs.NewRoot(cas, repo, workspaceName)
-	if err != nil {
-		return nil, err
-	}
-
-	root := &Root{
-		RepoNode: r,
-	}
+	root.AddChild(".grit", ch, true)
 	commandServer := &CommandServer{
-		invoker: root,
+		root: root,
 	}
-	l, s, err := newSocket()
-	if err != nil {
-		return nil, err
-	}
-	root.Socket = s
 	srv := rpc.NewServer()
 	if err := srv.Register(commandServer); err != nil {
-		return nil, err
+		return err
 	}
 	go srv.Accept(l)
 
-	return root, nil
+	return nil
 }
 
 func (s *CommandServer) Exec(req *CommandRequest, rep *CommandReply) error {
@@ -147,7 +125,7 @@ func (s *CommandServer) Exec(req *CommandRequest, rep *CommandReply) error {
 		Args:        req.Args,
 		Dir:         req.Dir,
 	}
-	if err := s.invoker.Invoke(call); err != nil {
+	if err := s.Invoke(call); err != nil {
 		rep.ExitCode = 1
 		call.Write([]byte(err.Error()))
 		err = nil

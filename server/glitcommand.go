@@ -61,8 +61,6 @@ func findRoot(dir string, current *fs.Inode) (*gritfs.RepoNode, string, error) {
 	if dir == "" {
 		if rn, ok := current.Operations().(*gritfs.RepoNode); ok {
 			return rn, "", nil
-		} else if rn, ok := current.Operations().(*Root); ok {
-			return rn.RepoNode, "", nil
 		}
 		return nil, "", nil
 	}
@@ -77,9 +75,6 @@ func findRoot(dir string, current *fs.Inode) (*gritfs.RepoNode, string, error) {
 
 		if rn, ok := ch.Operations().(*gritfs.RepoNode); ok {
 			result = rn
-			repoIdx = i
-		} else if rn, ok := ch.Operations().(*Root); ok {
-			result = rn.RepoNode
 			repoIdx = i
 		}
 

@@ -67,14 +67,14 @@ func main() {
 	if *gitDebug {
 		gritRepo.SetDebug(*gitDebug)
 	}
-	root, err := server.NewCommandServer(cas, gritRepo, *workspaceName)
+	root, err := gritfs.NewRoot(cas, gritRepo, *workspaceName)
 	if err != nil {
-		log.Fatalf("NewCommandServer: %v", err)
+		log.Fatalf("NewRoot: %v", err)
 	}
 
 	// Mount the file system
 	log.Println("Mounting...")
-	server, err := fusefs.Mount(mntDir, root, &fusefs.Options{
+	srv, err := fusefs.Mount(mntDir, root, &fusefs.Options{
 		MountOptions: fuse.MountOptions{Debug: *debug},
 		UID:          uint32(os.Getuid()),
 		GID:          uint32(os.Getgid()),
@@ -82,8 +82,11 @@ func main() {
 	if err != nil {
 		log.Fatal("Mount", err)
 	}
-
+	defer srv.Unmount()
+	if err := server.StartCommandServer(root, srv); err != nil {
+		log.Fatalf("StartCommandServer: %v", err)
+	}
 	log.Printf("Mounted git on %s\n", mntDir)
 	// Serve the file system, until unmounted by calling fusermount -u
-	server.Wait()
+	srv.Wait()
 }
