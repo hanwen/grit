@@ -47,8 +47,6 @@ func NewWorkspacesNode(cas *CAS, repo *repo.Repository) (*WorkspacesNode, error)
 	return n, nil
 }
 
-var _ = (fs.NodeOnAdder)((*RepoNode)(nil))
-
 func (r *WorkspacesNode) OnAdd(ctx context.Context) {
 	if err := r.onAdd(ctx); err != nil {
 		log.Printf("OnAdd: %v", err)

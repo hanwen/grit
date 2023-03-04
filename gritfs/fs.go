@@ -23,6 +23,7 @@ import (
 	"os/user"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
@@ -47,6 +48,9 @@ type RepoNode struct {
 
 	// calculation timestamp for commit.Hash
 	idTime time.Time
+
+	mu           sync.Mutex
+	materialized bool
 }
 
 var _ = (Node)((*RepoNode)(nil))
@@ -545,19 +549,54 @@ func (r *RepoNode) newGitNode(mode filemode.FileMode, nodePath string) (Node, er
 	}
 }
 
-var _ = (fs.NodeOnAdder)((*RepoNode)(nil))
+var _ = (fs.NodeLookuper)((*RepoNode)(nil))
+var _ = (fs.NodeReaddirer)((*RepoNode)(nil))
 
-func (r *RepoNode) OnAdd(ctx context.Context) {
-	if err := r.onAdd(ctx); err != nil {
-		log.Printf("OnAdd: %v", err)
+func (r *RepoNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.materialize()
+
+	child := r.GetChild(name)
+	if child == nil {
+		return nil, syscall.ENOENT
 	}
+
+	if ga, ok := child.Operations().(fs.NodeGetattrer); ok {
+		var a fuse.AttrOut
+		errno := ga.Getattr(ctx, nil, &a)
+		if errno == 0 {
+			out.Attr = a.Attr
+		}
+	}
+	return child, 0
 }
 
-func (r *RepoNode) onAdd(ctx context.Context) error {
+func (r *RepoNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.materialize()
+	res := []fuse.DirEntry{}
+	for k, ch := range r.Children() {
+		res = append(res, fuse.DirEntry{Mode: ch.Mode(),
+			Name: k,
+			Ino:  ch.StableAttr().Ino})
+	}
+	return fs.NewListDirStream(res), 0
+}
+
+func (r *RepoNode) materialize() error {
+	if r.materialized {
+		return nil
+	}
 	// todo - should be in OnAdd
 	want, _, err := r.ReadWorkspaceCommit()
 	if err != nil {
 		return err
 	}
-	return r.SetID(want.Hash, time.Now())
+	err = r.SetID(want.Hash, time.Now())
+	r.materialized = true
+	return err
 }
