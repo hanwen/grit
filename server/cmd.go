@@ -101,7 +101,14 @@ func (s *CommandServer) Exec(req *CommandRequest, rep *CommandReply) error {
 	if err != nil {
 		return err
 	}
-	if err := RunCommand(req.Args, req.Dir, ioc, s.root.RepoNode); err != nil {
+
+	call := IOClient{
+		IOClientAPI: ioc,
+		Args:        req.Args,
+		Dir:         req.Dir,
+		Root:        s.root.RepoNode,
+	}
+	if err := RunCommand(&call); err != nil {
 		rep.ExitCode = 1
 		ioc.Write([]byte(err.Error()))
 		err = nil
@@ -160,6 +167,10 @@ type IOClientAPI interface {
 // RPC client for talking back to command-line process
 type IOClient struct {
 	IOClientAPI
+
+	Args []string
+	Dir  string
+	Root gritfs.Node
 }
 
 func (ioc *IOClient) Printf(str string, args ...any) (int, error) {

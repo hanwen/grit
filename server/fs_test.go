@@ -316,13 +316,19 @@ func TestSnapshot(t *testing.T) {
 }
 
 func testCommand(t *testing.T, args []string, dir string, root *gritfs.RepoNode) (out []byte) {
-	ioc := &testIOC{}
-	if err := RunCommand(args, dir, ioc, root); err != nil {
-		t.Log(ioc.String())
+	tc := &testIOC{}
+	ioc := IOClient{
+		IOClientAPI: tc,
+		Args:        args,
+		Dir:         dir,
+		Root:        root,
+	}
+	if err := RunCommand(&ioc); err != nil {
+		t.Log(tc.String())
 		t.Fatalf("%s; %v", args, err)
 	}
 
-	return ioc.Bytes()
+	return tc.Bytes()
 }
 
 func TestRemount(t *testing.T) {
