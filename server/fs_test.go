@@ -322,7 +322,7 @@ func testCommand(t *testing.T, args []string, dir string, root *gritfs.RepoNode)
 		Args:        args,
 		Dir:         dir,
 	}
-	if err := InvokeRepoNode(&call, root); err != nil {
+	if err := InvokeRepoNode(&call, root.EmbeddedInode()); err != nil {
 		t.Log(tc.String())
 		t.Fatalf("%s; %v", args, err)
 	}

@@ -37,25 +37,37 @@ import (
 
 // CommandServer serves RPC calls
 type CommandServer struct {
-	root *gritfs.RepoNode
+	root *fs.Inode
 }
 
 // RPC client for talking back to command-line process
 type Call struct {
 	IOClientAPI
-
-	Args []string
-	Dir  string
-	Root *gritfs.RepoNode
+	Args     []string
+	Dir      string
+	RepoNode *gritfs.RepoNode
+	Root     *fs.Inode
 }
 
 func (cs *CommandServer) Invoke(call *Call) error {
 	return InvokeRepoNode(call, cs.root)
 }
 
-func InvokeRepoNode(call *Call, rn *gritfs.RepoNode) error {
+func InvokeRepoNode(call *Call, root *fs.Inode) error {
 	if len(call.Args) == 0 {
 		return Usage(call)
+	}
+
+	rootGitNode, dir, err := findRoot(call.Dir, root)
+	if err != nil {
+		return err
+	}
+	call.Dir = dir
+	call.RepoNode = rootGitNode
+	call.Root = root
+
+	if rootGitNode == nil {
+		return WSCommand(call)
 	}
 
 	subcommand := call.Args[0]
@@ -67,16 +79,10 @@ func InvokeRepoNode(call *Call, rn *gritfs.RepoNode) error {
 		return fmt.Errorf("unknown subcommand %q", subcommand)
 	}
 
-	rootGitNode, dir, err := findRoot(call.Dir, rn.EmbeddedInode())
-	if err != nil {
-		return err
-	}
-	call.Dir = dir
-	call.Root = rootGitNode
 	return fn(call)
 }
 
-func StartCommandServer(root *gritfs.RepoNode, server *fuse.Server) error {
+func StartCommandServer(root *fs.Inode, server *fuse.Server) error {
 	server.WaitMount()
 	l, sock, err := newSocket()
 	if err != nil {
@@ -87,6 +93,7 @@ func StartCommandServer(root *gritfs.RepoNode, server *fuse.Server) error {
 		Data: []byte(sock),
 	}, fs.StableAttr{Mode: fuse.S_IFLNK})
 	root.AddChild(".grit", ch, true)
+
 	commandServer := &CommandServer{
 		root: root,
 	}
@@ -127,7 +134,7 @@ func (s *CommandServer) Exec(req *CommandRequest, rep *CommandReply) error {
 	}
 	if err := s.Invoke(call); err != nil {
 		rep.ExitCode = 1
-		call.Write([]byte(err.Error()))
+		call.Write([]byte(err.Error() + "\n"))
 		err = nil
 	}
 

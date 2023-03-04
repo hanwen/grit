@@ -33,6 +33,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/hanwen/gritfs/gitutil"
 	"github.com/hanwen/gritfs/protov2"
 )
@@ -57,6 +58,14 @@ func (r *Repository) String() string {
 
 func (r *Repository) SetDebug(dbg bool) {
 	r.gitClient.Debug = true
+}
+
+func (r *Repository) References() (storer.ReferenceIter, error) {
+	return r.repo.References()
+}
+
+func (r *Repository) RemoveReference(nm plumbing.ReferenceName) error {
+	return r.repo.Storer.RemoveReference(nm)
 }
 
 func (r *Repository) CachedBlobSize(id plumbing.Hash) (uint64, bool) {

@@ -22,16 +22,12 @@ func main() {
 	casDir := flag.String("cas", filepath.Join(os.Getenv("HOME"), ".cache", "gritfs2"), "")
 	debug := flag.Bool("debug", false, "FUSE debug")
 	gitDebug := flag.Bool("git_debug", false, "git debug")
-	workspaceName := flag.String("workspace", "", "workspace name")
 	flag.Parse()
 	if len(flag.Args()) != 1 {
 		log.Fatal("usage")
 	}
 	mntDir := flag.Arg(0)
 
-	if *workspaceName == "" {
-		log.Fatal("must specify -workspace")
-	}
 	if *originURL == "" {
 		log.Fatal("must specify -url")
 	}
@@ -67,7 +63,7 @@ func main() {
 	if *gitDebug {
 		gritRepo.SetDebug(*gitDebug)
 	}
-	root, err := gritfs.NewRoot(cas, gritRepo, *workspaceName)
+	root, err := gritfs.NewWorkspacesNode(cas, gritRepo)
 	if err != nil {
 		log.Fatalf("NewRoot: %v", err)
 	}
@@ -83,7 +79,7 @@ func main() {
 		log.Fatal("Mount", err)
 	}
 	defer srv.Unmount()
-	if err := server.StartCommandServer(root, srv); err != nil {
+	if err := server.StartCommandServer(root.EmbeddedInode(), srv); err != nil {
 		log.Fatalf("StartCommandServer: %v", err)
 	}
 	log.Printf("Mounted git on %s\n", mntDir)

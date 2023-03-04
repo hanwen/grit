@@ -162,7 +162,7 @@ func WSLogCommand(call *Call) error {
 		return fmt.Errorf("need argument")
 	}
 
-	repoNode := call.Root.GetRepoNode()
+	repoNode := call.RepoNode
 	repo := repoNode.Repository()
 	if err := wsLog(repo, call, repoNode.WorkspaceName(), *maxEntry); err != nil {
 		return err
@@ -189,7 +189,7 @@ func LogCommand(call *Call) error {
 		startHash = plumbing.NewHash(args[0])
 		args = args[1:]
 	} else {
-		_, err := call.Root.GetRepoNode().Snapshot(&gritfs.WorkspaceUpdate{
+		_, err := call.RepoNode.Snapshot(&gritfs.WorkspaceUpdate{
 			Message: "log call",
 			TS:      time.Now(),
 			NewState: gritfs.WorkspaceState{
@@ -201,7 +201,7 @@ func LogCommand(call *Call) error {
 			return err
 		}
 
-		startHash = call.Root.ID()
+		startHash = call.RepoNode.ID()
 	}
 
 	opts := &git.LogOptions{
@@ -216,7 +216,7 @@ func LogCommand(call *Call) error {
 		opts.PathFilter = newPathFilter(filtered)
 	}
 
-	repo := call.Root.GetRepoNode().Repository()
+	repo := call.RepoNode.Repository()
 	iter, err := repo.Log(opts)
 	if err != nil {
 		return err
@@ -253,7 +253,7 @@ func LogCommand(call *Call) error {
 				return err
 			}
 
-			chs, err := call.Root.GetRepoNode().Repository().DiffRecursiveByCommit(parent, c)
+			chs, err := call.RepoNode.Repository().DiffRecursiveByCommit(parent, c)
 			if err != nil {
 				log.Println("patch", parent, c, err)
 				return err
@@ -293,11 +293,11 @@ func AmendCommand(call *Call) error {
 		},
 		TS: time.Now(),
 	}
-	if _, err := call.Root.GetRepoNode().Snapshot(&wsUpdate); err != nil {
+	if _, err := call.RepoNode.Snapshot(&wsUpdate); err != nil {
 		return err
 	}
 
-	c := call.Root.GetRepoNode().GetCommit()
+	c := call.RepoNode.GetCommit()
 
 	msg := `# provide a new commit message below.
 # remove the Grit-Commit footer for further edits to
@@ -319,14 +319,14 @@ func AmendCommand(call *Call) error {
 
 	c.Message = strings.Join(lines, "\n")
 
-	return call.Root.GetRepoNode().StoreCommit(&c, &gritfs.WorkspaceUpdate{
+	return call.RepoNode.StoreCommit(&c, &gritfs.WorkspaceUpdate{
 		TS:      time.Now(),
 		Message: "amend",
 	})
 }
 
 func CommitCommand(call *Call) error {
-	repoNode := call.Root.GetRepoNode()
+	repoNode := call.RepoNode
 
 	wsUpdate := gritfs.WorkspaceUpdate{
 		Message: "before commit command",
@@ -446,7 +446,7 @@ func SnapshotCommand(call *Call) error {
 		},
 		TS: time.Now(),
 	}
-	res, err := call.Root.GetRepoNode().Snapshot(&wsUpdate)
+	res, err := call.RepoNode.Snapshot(&wsUpdate)
 	if err != nil {
 		return err
 	}
@@ -520,7 +520,7 @@ func LsTreeCommand(call *Call) error {
 		return fmt.Errorf("flag parse")
 	}
 
-	inode := call.Root.EmbeddedInode()
+	inode := call.RepoNode.EmbeddedInode()
 	current, err := walkPath(inode, call.Dir)
 	if err != nil {
 		return err
@@ -581,7 +581,7 @@ func FindCommand(call *Call) error {
 		return nil // Parse already prints diagnostics.
 	}
 
-	inode := call.Root.EmbeddedInode()
+	inode := call.RepoNode.EmbeddedInode()
 	current, err := walkPath(inode, call.Dir)
 	if err != nil {
 		return err
@@ -608,11 +608,11 @@ func CheckoutCommand(call *Call) error {
 	}
 	h := plumbing.NewHash(flagSet.Arg(0))
 
-	if _, err := call.Root.GetRepoNode().Repository().FetchCommit(h); err != nil {
+	if _, err := call.RepoNode.Repository().FetchCommit(h); err != nil {
 		return err
 	}
 
-	if err := call.Root.GetRepoNode().SetID(h, time.Now()); err != nil {
+	if err := call.RepoNode.SetID(h, time.Now()); err != nil {
 		return err
 	}
 	return nil
@@ -634,7 +634,7 @@ func VisitCommand(call *Call) error {
 		return err
 	}
 
-	node := call.Root.GetRepoNode().EmbeddedInode()
+	node := call.RepoNode.EmbeddedInode()
 	visit(node)
 	return nil
 
@@ -664,5 +664,41 @@ func Usage(call *Call) error {
 	}
 
 	call.Println("")
+	return nil
+}
+
+func WSCommand(call *Call) error {
+	if len(call.Args) == 0 || call.Args[0] != "workspace" {
+		return fmt.Errorf("must use 'workspace' outside workspace")
+	}
+
+	call.Args = call.Args[1:]
+
+	if len(call.Args) == 0 {
+		return fmt.Errorf("Subcommand missing. Use one of list, create, delete.")
+	}
+	root := call.Root.Operations().(*gritfs.WorkspacesNode)
+	switch call.Args[0] {
+	case "list":
+		names, err := gritfs.WorkspaceNames(root.Repository())
+		if err != nil {
+			return err
+		}
+
+		for _, nm := range names {
+			call.Println(nm)
+		}
+	case "create":
+		err := root.AddWorkspace(call.Args[1])
+		if err != nil {
+			return err
+		}
+	case "delete":
+		if err := root.DelWorkspace(call.Args[1]); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unknown subcommand %q.", call.Args[0])
+	}
 	return nil
 }
