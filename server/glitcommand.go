@@ -607,7 +607,9 @@ func CheckoutCommand(call *Call) error {
 		return fmt.Errorf("need 1 arg")
 	}
 	h := plumbing.NewHash(flagSet.Arg(0))
-
+	if h == plumbing.ZeroHash {
+		return fmt.Errorf("could not parse as SHA1: %q", flagSet.Arg(0))
+	}
 	if _, err := call.RepoNode.Repository().FetchCommit(h); err != nil {
 		return err
 	}
@@ -689,9 +691,22 @@ func WSCommand(call *Call) error {
 			call.Println(nm)
 		}
 	case "create":
-		err := root.AddWorkspace(call.Args[1])
-		if err != nil {
+		if len(call.Args) == 0 {
+			return fmt.Errorf("usage 'workspace create WORKSPACE-NAME [COMMIT]'")
+		}
+		wsName := call.Args[1]
+		if err := root.AddWorkspace(wsName); err != nil {
 			return err
+		}
+		if len(call.Args) > 1 {
+			c2 := &Call{
+				IOClientAPI: call.IOClientAPI,
+				Dir:         wsName,
+				Args:        []string{call.Args[2]},
+				RepoNode:    call.Root.GetChild(wsName).Operations().(*gritfs.RepoNode),
+				Root:        call.Root,
+			}
+			return CheckoutCommand(c2)
 		}
 	case "delete":
 		if err := root.DelWorkspace(call.Args[1]); err != nil {
