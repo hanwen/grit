@@ -107,11 +107,7 @@ func TestFS(t *testing.T) {
 
 	mntDir := mountTest(t, root)
 
-	ioc := &testIOC{}
-	exit, err := RunCommand([]string{"checkout", tr.CommitID.String()}, "", ioc, root.RepoNode)
-	if exit != 0 || err != nil {
-		t.Errorf("exit %d, %v", exit, err)
-	}
+	testCommand(t, []string{"checkout", tr.CommitID.String()}, "", root.RepoNode)
 
 	for k, want := range input {
 		fn := filepath.Join(mntDir, k)
@@ -125,13 +121,8 @@ func TestFS(t *testing.T) {
 	}
 
 	for i := 0; i < 2; i++ {
-		ioc = &testIOC{}
-		exit, err = RunCommand([]string{"log", "-n", "1"}, "", ioc, root.RepoNode)
-		if exit != 0 || err != nil {
-			t.Errorf("exit %d, %v", exit, err)
-		}
-
-		if got, want := ioc.String(), "commit "+tr.CommitID.String(); !strings.Contains(got, want) {
+		out := testCommand(t, []string{"log", "-n", "1"}, "", root.RepoNode)
+		if got, want := string(out), "commit "+tr.CommitID.String(); !strings.Contains(got, want) {
 			t.Errorf("got %q, want %q", got, want)
 		}
 	}
@@ -141,7 +132,6 @@ func TestFS(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ioc = &testIOC{}
 	out := testCommand(t, []string{"log", "-n", "1", "-p"}, "", root.RepoNode)
 
 	if got, want := string(out), "+blabla\n"; !strings.Contains(got, want) {
@@ -234,13 +224,7 @@ func TestSubmodules(t *testing.T) {
 	root := newTestRoot(t, tr.RepoURL)
 	mntDir := mountTest(t, root)
 
-	{
-		ioc := &testIOC{}
-		exit, err := RunCommand([]string{"checkout", tr.CommitID.String()}, "", ioc, root.RepoNode)
-		if exit != 0 || err != nil {
-			t.Errorf("exit %d, %v", exit, err)
-		}
-	}
+	testCommand(t, []string{"checkout", tr.CommitID.String()}, "", root.RepoNode)
 
 	if fi, err := os.Stat(filepath.Join(mntDir, "sub1")); err != nil {
 		t.Fatalf("stat: %v", err)
@@ -282,13 +266,7 @@ func TestSubmodules(t *testing.T) {
 	if got, want := string(out), "+blabla\n"; !strings.Contains(got, want) {
 		t.Errorf("got %s, want substr %q", got, want)
 	}
-	{
-		ioc := &testIOC{}
-		exit, err := RunCommand([]string{"checkout", tr.CommitID.String()}, "", ioc, root.RepoNode)
-		if exit != 0 || err != nil {
-			t.Errorf("exit %d, %v", exit, err)
-		}
-	}
+	testCommand(t, []string{"checkout", tr.CommitID.String()}, "", root.RepoNode)
 }
 
 func TestSnapshot(t *testing.T) {
@@ -310,11 +288,7 @@ func TestSnapshot(t *testing.T) {
 	root := newTestRoot(t, tr.RepoURL)
 	mntDir := mountTest(t, root)
 
-	ioc := &testIOC{}
-	exit, err := RunCommand([]string{"checkout", tr.CommitID.String()}, "", ioc, root.RepoNode)
-	if exit != 0 || err != nil {
-		t.Errorf("exit %d, %v", exit, err)
-	}
+	testCommand(t, []string{"checkout", tr.CommitID.String()}, "", root.RepoNode)
 
 	time.Sleep(time.Microsecond) // ensure clock advances
 	res, err := root.Snapshot(&gritfs.WorkspaceUpdate{
@@ -343,9 +317,9 @@ func TestSnapshot(t *testing.T) {
 
 func testCommand(t *testing.T, args []string, dir string, root *gritfs.RepoNode) (out []byte) {
 	ioc := &testIOC{}
-	if exit, err := RunCommand(args, dir, ioc, root); exit != 0 || err != nil {
+	if err := RunCommand(args, dir, ioc, root); err != nil {
 		t.Log(ioc.String())
-		t.Fatalf("%s; %d/%v", args, exit, err)
+		t.Fatalf("%s; %v", args, err)
 	}
 
 	return ioc.Bytes()

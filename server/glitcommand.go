@@ -142,7 +142,7 @@ func wsLog(gritRepo *repo.Repository, ioc *IOClient, wsname string, maxEntry int
 
 }
 
-func WSLogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
+func WSLogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 	fs := flag.NewFlagSet("wslog", flag.ContinueOnError)
 	fs.Bool("help", false, "show help")
 	maxEntry := fs.Int("n", 0, "maximum number of entries to show")
@@ -150,26 +150,25 @@ func WSLogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (i
 	fs.Usage = usage(fs)
 
 	if err := fs.Parse(args); err != nil {
-		return 2, nil // Parse already prints diagnostics.
+		return err
 	}
 
 	args = fs.Args()
 
 	if len(args) != 0 {
 		fs.Usage()
-		return 2, nil
+		return fmt.Errorf("need argument")
 	}
 
 	repoNode := root.GetRepoNode()
 	repo := repoNode.Repository()
 	if err := wsLog(repo, ioc, repoNode.WorkspaceName(), *maxEntry); err != nil {
-		ioc.Printf("wsLog: %v", err)
-		return 1, nil
+		return err
 	}
-	return 0, nil
+	return nil
 }
 
-func LogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
+func LogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 	fs := flag.NewFlagSet("log", flag.ContinueOnError)
 	patch := fs.Bool("p", false, "show patches")
 	fs.Bool("help", false, "show help")
@@ -178,7 +177,7 @@ func LogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int
 	fs.Usage = usage(fs)
 
 	if err := fs.Parse(args); err != nil {
-		return 2, nil // Parse already prints diagnostics.
+		return fmt.Errorf("flag parse")
 	}
 
 	args = fs.Args()
@@ -197,8 +196,7 @@ func LogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int
 		})
 
 		if err != nil {
-			ioc.Println("root.gitID: %v", err)
-			return 2, nil
+			return err
 		}
 
 		startHash = root.ID()
@@ -219,8 +217,7 @@ func LogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int
 	repo := root.GetRepoNode().Repository()
 	iter, err := repo.Log(opts)
 	if err != nil {
-		ioc.Println("Log(%v): %v\n", opts, err)
-		return 1, nil
+		return err
 	}
 
 	if err := iter.ForEach(func(c *object.Commit) error {
@@ -282,7 +279,7 @@ func LogCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int
 		log.Printf("ForEach: %v", err)
 	}
 
-	return 0, nil
+	return nil
 }
 
 func amend(ioc *IOClient, root gritfs.Node) error {
@@ -317,12 +314,11 @@ func amend(ioc *IOClient, root gritfs.Node) error {
 	})
 }
 
-func AmendCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
+func AmendCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 	if err := amend(ioc, root); err != nil {
-		ioc.Println("%v", err)
-		return 2, nil
+		return err
 	}
-	return 0, nil
+	return nil
 }
 
 func commit(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
@@ -438,7 +434,7 @@ func commit(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 	return nil
 }
 
-func SnapshotCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
+func SnapshotCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 	wsUpdate := gritfs.WorkspaceUpdate{
 		Message: "snapshot command",
 		NewState: gritfs.WorkspaceState{
@@ -448,19 +444,17 @@ func SnapshotCommand(args []string, dir string, ioc *IOClient, root gritfs.Node)
 	}
 	res, err := root.GetRepoNode().Snapshot(&wsUpdate)
 	if err != nil {
-		ioc.Printf("Snapshot: %v", err)
-		return 1, nil
+		return err
 	}
 	ioc.Printf("Recomputed %d hashes\n", res.Recomputed)
-	return 0, nil
+	return nil
 }
 
-func CommitCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
+func CommitCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 	if err := commit(args, dir, ioc, root); err != nil {
-		ioc.Println("%v", err)
-		return 2, nil
+		return err
 	}
-	return 0, nil
+	return nil
 }
 
 var fileModeNames = map[filemode.FileMode]string{
@@ -519,21 +513,20 @@ func walkPath(root *fs.Inode, path string) (*fs.Inode, error) {
 	return current, nil
 }
 
-func LsTreeCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
+func LsTreeCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 	flagSet := flag.NewFlagSet("ls-tree", flag.ContinueOnError)
 	recursive := flagSet.Bool("r", false, "recursive")
 	flagSet.SetOutput(ioc)
 	flagSet.Usage = usage(flagSet)
 
 	if err := flagSet.Parse(args); err != nil {
-		return 2, nil // Parse already prints diagnostics.
+		return fmt.Errorf("flag parse")
 	}
 
 	inode := root.(fs.InodeEmbedder).EmbeddedInode()
 	current, err := walkPath(inode, dir)
 	if err != nil {
-		ioc.Println("%s", err)
-		return 1, nil
+		return err
 	}
 	arg := ""
 	if len(flagSet.Args()) > 0 {
@@ -542,16 +535,14 @@ func LsTreeCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (
 
 	current, err = walkPath(current, arg)
 	if err != nil {
-		ioc.Println("%s", err)
-		return 1, nil
+		return err
 	}
 
 	if err := lsTree(current, arg, *recursive, ioc); err != nil {
-		ioc.Println("lstree: %v", err)
-		return 1, nil
+		return err
 	}
 
-	return 0, nil
+	return nil
 }
 
 func find(root *fs.Inode, dir string, nameFilter, typeFilter string, ioc *IOClient) error {
@@ -583,55 +574,51 @@ func find(root *fs.Inode, dir string, nameFilter, typeFilter string, ioc *IOClie
 	return nil
 }
 
-func FindCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
+func FindCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 	flagSet := flag.NewFlagSet("find", flag.ContinueOnError)
 	nameFilter := flagSet.String("name", "", "name glob")
 	typeFilter := flagSet.String("type", "", "filter to type")
 	flagSet.SetOutput(ioc)
 	flagSet.Usage = usage(flagSet)
 	if err := flagSet.Parse(args); err != nil {
-		return 2, nil // Parse already prints diagnostics.
+		return nil // Parse already prints diagnostics.
 	}
 
 	inode := root.(fs.InodeEmbedder).EmbeddedInode()
 	current, err := walkPath(inode, dir)
 	if err != nil {
-		ioc.Println("%s", err)
-		return 1, nil
+		return err
 	}
 	if err := find(current, "", *nameFilter, *typeFilter, ioc); err != nil {
-		ioc.Println("lstree: %v", err)
-		return 1, nil
+		return err
 	}
 
-	return 0, nil
+	return nil
 
 }
 
-func CheckoutCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
+func CheckoutCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 	flagSet := flag.NewFlagSet("checkout", flag.ContinueOnError)
 	flagSet.SetOutput(ioc)
 	flagSet.Usage = usage(flagSet)
 	if err := flagSet.Parse(args); err != nil {
-		return 2, nil // Parse already prints diagnostics.
+		return fmt.Errorf("flag parse")
 	}
 
 	if len(flagSet.Args()) != 1 {
 		flagSet.Usage()
-		return 2, nil
+		return fmt.Errorf("need 1 arg")
 	}
 	h := plumbing.NewHash(flagSet.Arg(0))
 
 	if _, err := root.GetRepoNode().Repository().FetchCommit(h); err != nil {
-		ioc.Printf("FetchCommit: %s\n", err)
-		return 1, nil
+		return err
 	}
 
 	if err := root.GetRepoNode().SetID(h, time.Now()); err != nil {
-		ioc.Printf("%s\n", err)
-		return 1, nil
+		return err
 	}
-	return 0, nil
+	return nil
 
 }
 
@@ -642,21 +629,21 @@ func visit(n *fs.Inode) {
 }
 
 // For benchmarking.
-func VisitCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) (int, error) {
+func VisitCommand(args []string, dir string, ioc *IOClient, root gritfs.Node) error {
 	flagSet := flag.NewFlagSet("visit", flag.ContinueOnError)
 	flagSet.SetOutput(ioc)
 	flagSet.Usage = usage(flagSet)
 	if err := flagSet.Parse(args); err != nil {
-		return 2, nil // Parse already prints diagnostics.
+		return err
 	}
 
 	node := root.GetRepoNode().EmbeddedInode()
 	visit(node)
-	return 0, nil
+	return nil
 
 }
 
-var dispatch = map[string]func([]string, string, *IOClient, gritfs.Node) (int, error){
+var dispatch = map[string]func([]string, string, *IOClient, gritfs.Node) error{
 	"log":      LogCommand,
 	"wslog":    WSLogCommand,
 	"amend":    AmendCommand,
@@ -668,7 +655,7 @@ var dispatch = map[string]func([]string, string, *IOClient, gritfs.Node) (int, e
 	"visit":    VisitCommand,
 }
 
-func Usage(ioc *IOClient) (int, error) {
+func Usage(ioc *IOClient) error {
 	ioc.Printf("Usage: grit <subcommand>\n\nAvailable subcommands:\n\n")
 	var ks []string
 	for k := range dispatch {
@@ -680,10 +667,10 @@ func Usage(ioc *IOClient) (int, error) {
 	}
 
 	ioc.Println("")
-	return 0, nil
+	return nil
 }
 
-func RunCommand(args []string, dir string, iocAPI IOClientAPI, root *gritfs.RepoNode) (int, error) {
+func RunCommand(args []string, dir string, iocAPI IOClientAPI, root *gritfs.RepoNode) error {
 	ioc := &IOClient{iocAPI}
 	if len(args) == 0 {
 		return Usage(ioc)
@@ -695,14 +682,12 @@ func RunCommand(args []string, dir string, iocAPI IOClientAPI, root *gritfs.Repo
 	fn := dispatch[subcommand]
 	if fn == nil {
 		log.Println(ioc)
-		ioc.Printf("unknown subcommand %q", subcommand)
-		return 2, nil
+		return fmt.Errorf("unknown subcommand %q", subcommand)
 	}
 
 	rootInode, dir, err := findRoot(dir, root)
 	if err != nil {
-		ioc.Println("%s", err)
-		return 2, nil
+		return err
 	}
 	rootGitNode := rootInode.Operations().(gritfs.Node)
 

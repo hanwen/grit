@@ -101,8 +101,11 @@ func (s *CommandServer) Exec(req *CommandRequest, rep *CommandReply) error {
 	if err != nil {
 		return err
 	}
-	exit, err := RunCommand(req.Args, req.Dir, ioc, s.root.RepoNode)
-	rep.ExitCode = exit
+	if err := RunCommand(req.Args, req.Dir, ioc, s.root.RepoNode); err != nil {
+		rep.ExitCode = 1
+		ioc.Write([]byte(err.Error()))
+		err = nil
+	}
 
 	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &endUsage); err != nil {
 		return fmt.Errorf("Getrusage: %v", err)
