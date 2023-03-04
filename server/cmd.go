@@ -38,13 +38,55 @@ import (
 
 // CommandServer serves RPC calls
 type CommandServer struct {
-	root *Root
+	invoker Invoker
+}
+
+// RPC client for talking back to command-line process
+type Call struct {
+	IOClientAPI
+
+	Args []string
+	Dir  string
+	Root gritfs.Node
+}
+
+type Invoker interface {
+	Invoke(*Call) error
 }
 
 // Root is a RepoNode that makes .grit socket available
 type Root struct {
 	*gritfs.RepoNode
 	Socket string
+}
+
+func (root *Root) Invoke(call *Call) error {
+	return InvokeRepoNode(call, root.RepoNode)
+}
+
+func InvokeRepoNode(call *Call, rn *gritfs.RepoNode) error {
+	if len(call.Args) == 0 {
+		return Usage(call)
+	}
+
+	subcommand := call.Args[0]
+	call.Args = call.Args[1:]
+
+	fn := dispatch[subcommand]
+	if fn == nil {
+		log.Println(call)
+		return fmt.Errorf("unknown subcommand %q", subcommand)
+	}
+
+	rootInode, dir, err := findRoot(call.Dir, rn.EmbeddedInode())
+	if err != nil {
+		return err
+	}
+	rootGitNode := rootInode.Operations().(gritfs.Node)
+
+	call.Dir = dir
+	call.Root = rootGitNode
+	return fn(call)
 }
 
 func (r *Root) OnAdd(ctx context.Context) {
@@ -65,7 +107,7 @@ func NewCommandServer(cas *gritfs.CAS, repo *repo.Repository, workspaceName stri
 		RepoNode: r,
 	}
 	commandServer := &CommandServer{
-		root: root,
+		invoker: root,
 	}
 	l, s, err := newSocket()
 	if err != nil {
@@ -102,13 +144,12 @@ func (s *CommandServer) Exec(req *CommandRequest, rep *CommandReply) error {
 		return err
 	}
 
-	call := Call{
+	call := &Call{
 		IOClientAPI: iocAPI,
 		Args:        req.Args,
 		Dir:         req.Dir,
-		Root:        s.root.RepoNode,
 	}
-	if err := RunCommand(&call); err != nil {
+	if err := s.invoker.Invoke(call); err != nil {
 		rep.ExitCode = 1
 		call.Write([]byte(err.Error()))
 		err = nil
@@ -162,15 +203,6 @@ type EditReply struct {
 type IOClientAPI interface {
 	Edit(name string, data []byte) ([]byte, error)
 	Write(data []byte) (n int, err error)
-}
-
-// RPC client for talking back to command-line process
-type Call struct {
-	IOClientAPI
-
-	Args []string
-	Dir  string
-	Root gritfs.Node
 }
 
 func (call *Call) Printf(str string, args ...any) (int, error) {

@@ -55,8 +55,7 @@ func usage(fs *flag.FlagSet) func() {
 
 // findRoot finds the repo root (as opposed to the superproject root
 // which is the mountpoint.)
-func findRoot(dir string, root *gritfs.RepoNode) (*fs.Inode, string, error) {
-	rootInode := root.EmbeddedInode()
+func findRoot(dir string, rootInode *fs.Inode) (*fs.Inode, string, error) {
 	rootIdx := 0
 
 	if dir == "" {
@@ -68,7 +67,7 @@ func findRoot(dir string, root *gritfs.RepoNode) (*fs.Inode, string, error) {
 	for i, c := range components {
 		ch := current.GetChild(c)
 		if ch == nil {
-			return nil, "", fmt.Errorf("cannot find child %q at %v", c, current.Path(root.EmbeddedInode()))
+			return nil, "", fmt.Errorf("cannot find child %q at %v", c, current.Path(rootInode))
 		}
 
 		if _, ok := ch.Operations().(*gritfs.RepoNode); ok {
@@ -663,29 +662,4 @@ func Usage(call *Call) error {
 
 	call.Println("")
 	return nil
-}
-
-func RunCommand(call *Call) error {
-	if len(call.Args) == 0 {
-		return Usage(call)
-	}
-
-	subcommand := call.Args[0]
-	call.Args = call.Args[1:]
-
-	fn := dispatch[subcommand]
-	if fn == nil {
-		log.Println(call)
-		return fmt.Errorf("unknown subcommand %q", subcommand)
-	}
-
-	rootInode, dir, err := findRoot(call.Dir, call.Root.(*gritfs.RepoNode))
-	if err != nil {
-		return err
-	}
-	rootGitNode := rootInode.Operations().(gritfs.Node)
-
-	call.Dir = dir
-	call.Root = rootGitNode
-	return fn(call)
 }

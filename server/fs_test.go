@@ -64,9 +64,12 @@ func newTestRoot(t *testing.T, repoURL string) *Root {
 		t.Fatal(err)
 	}
 
-	root, err := NewCommandServer(cas, gritRepo, "ws")
+	repoNode, err := gritfs.NewRoot(cas, gritRepo, "ws")
 	if err != nil {
 		t.Fatal(err)
+	}
+	root := &Root{
+		RepoNode: repoNode,
 	}
 	return root
 }
@@ -321,9 +324,8 @@ func testCommand(t *testing.T, args []string, dir string, root *gritfs.RepoNode)
 		IOClientAPI: tc,
 		Args:        args,
 		Dir:         dir,
-		Root:        root,
 	}
-	if err := RunCommand(&call); err != nil {
+	if err := InvokeRepoNode(&call, root); err != nil {
 		t.Log(tc.String())
 		t.Fatalf("%s; %v", args, err)
 	}
