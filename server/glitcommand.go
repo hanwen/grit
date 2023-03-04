@@ -55,30 +55,38 @@ func usage(fs *flag.FlagSet) func() {
 
 // findRoot finds the repo root (as opposed to the superproject root
 // which is the mountpoint.)
-func findRoot(dir string, rootInode *fs.Inode) (*fs.Inode, string, error) {
-	rootIdx := 0
-
+func findRoot(dir string, current *fs.Inode) (*gritfs.RepoNode, string, error) {
+	repoIdx := 0
+	start := current
 	if dir == "" {
-		return rootInode, "", nil
+		if rn, ok := current.Operations().(*gritfs.RepoNode); ok {
+			return rn, "", nil
+		} else if rn, ok := current.Operations().(*Root); ok {
+			return rn.RepoNode, "", nil
+		}
+		return nil, "", nil
 	}
 
+	var result *gritfs.RepoNode
 	components := strings.Split(dir, "/")
-	current := rootInode
 	for i, c := range components {
 		ch := current.GetChild(c)
 		if ch == nil {
-			return nil, "", fmt.Errorf("cannot find child %q at %v", c, current.Path(rootInode))
+			return nil, "", fmt.Errorf("cannot find child %q at %v", c, current.Path(start))
 		}
 
-		if _, ok := ch.Operations().(*gritfs.RepoNode); ok {
-			rootInode = ch
-			rootIdx = i
+		if rn, ok := ch.Operations().(*gritfs.RepoNode); ok {
+			result = rn
+			repoIdx = i
+		} else if rn, ok := ch.Operations().(*Root); ok {
+			result = rn.RepoNode
+			repoIdx = i
 		}
 
 		current = ch
 	}
 
-	return rootInode, strings.Join(components[rootIdx+1:], "/"), nil
+	return result, strings.Join(components[repoIdx+1:], "/"), nil
 }
 
 const DateTime = "2006-01-02 15:04:05"
@@ -517,7 +525,7 @@ func LsTreeCommand(call *Call) error {
 		return fmt.Errorf("flag parse")
 	}
 
-	inode := call.Root.(fs.InodeEmbedder).EmbeddedInode()
+	inode := call.Root.EmbeddedInode()
 	current, err := walkPath(inode, call.Dir)
 	if err != nil {
 		return err
@@ -578,7 +586,7 @@ func FindCommand(call *Call) error {
 		return nil // Parse already prints diagnostics.
 	}
 
-	inode := call.Root.(fs.InodeEmbedder).EmbeddedInode()
+	inode := call.Root.EmbeddedInode()
 	current, err := walkPath(inode, call.Dir)
 	if err != nil {
 		return err

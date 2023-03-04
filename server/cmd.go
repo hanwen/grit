@@ -47,7 +47,7 @@ type Call struct {
 
 	Args []string
 	Dir  string
-	Root gritfs.Node
+	Root *gritfs.RepoNode
 }
 
 type Invoker interface {
@@ -78,12 +78,10 @@ func InvokeRepoNode(call *Call, rn *gritfs.RepoNode) error {
 		return fmt.Errorf("unknown subcommand %q", subcommand)
 	}
 
-	rootInode, dir, err := findRoot(call.Dir, rn.EmbeddedInode())
+	rootGitNode, dir, err := findRoot(call.Dir, rn.EmbeddedInode())
 	if err != nil {
 		return err
 	}
-	rootGitNode := rootInode.Operations().(gritfs.Node)
-
 	call.Dir = dir
 	call.Root = rootGitNode
 	return fn(call)

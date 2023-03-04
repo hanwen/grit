@@ -43,7 +43,7 @@ func (t *testIOC) Edit(name string, data []byte) ([]byte, error) {
 	return nil, fmt.Errorf("can't edit in test")
 }
 
-func newTestRoot(t *testing.T, repoURL string) *Root {
+func newTestRoot(t *testing.T, repoURL string) *gritfs.RepoNode {
 	casDir := t.TempDir()
 	cas, err := gritfs.NewCAS(casDir)
 	if err != nil {
@@ -68,10 +68,7 @@ func newTestRoot(t *testing.T, repoURL string) *Root {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := &Root{
-		RepoNode: repoNode,
-	}
-	return root
+	return repoNode
 }
 
 func mountTest(t *testing.T, root fs.InodeEmbedder) string {
@@ -110,7 +107,7 @@ func TestFS(t *testing.T) {
 
 	mntDir := mountTest(t, root)
 
-	testCommand(t, []string{"checkout", tr.CommitID.String()}, "", root.RepoNode)
+	testCommand(t, []string{"checkout", tr.CommitID.String()}, "", root)
 
 	for k, want := range input {
 		fn := filepath.Join(mntDir, k)
@@ -124,7 +121,7 @@ func TestFS(t *testing.T) {
 	}
 
 	for i := 0; i < 2; i++ {
-		out := testCommand(t, []string{"log", "-n", "1"}, "", root.RepoNode)
+		out := testCommand(t, []string{"log", "-n", "1"}, "", root)
 		if got, want := string(out), "commit "+tr.CommitID.String(); !strings.Contains(got, want) {
 			t.Errorf("got %q, want %q", got, want)
 		}
@@ -135,7 +132,7 @@ func TestFS(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out := testCommand(t, []string{"log", "-n", "1", "-p"}, "", root.RepoNode)
+	out := testCommand(t, []string{"log", "-n", "1", "-p"}, "", root)
 
 	if got, want := string(out), "+blabla\n"; !strings.Contains(got, want) {
 		t.Errorf("got %s, want substring %q", got, want)
@@ -145,13 +142,13 @@ func TestFS(t *testing.T) {
 		TS:       time.Now(),
 		NewState: gritfs.WorkspaceState{AutoSnapshot: true},
 	}
-	res, err := root.RepoNode.Snapshot(update)
+	res, err := root.Snapshot(update)
 	savedCommit := res.CheckedOut
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	commit, readState, err := root.RepoNode.ReadWorkspaceCommit()
+	commit, readState, err := root.ReadWorkspaceCommit()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +224,7 @@ func TestSubmodules(t *testing.T) {
 	root := newTestRoot(t, tr.RepoURL)
 	mntDir := mountTest(t, root)
 
-	testCommand(t, []string{"checkout", tr.CommitID.String()}, "", root.RepoNode)
+	testCommand(t, []string{"checkout", tr.CommitID.String()}, "", root)
 
 	if fi, err := os.Stat(filepath.Join(mntDir, "sub1")); err != nil {
 		t.Fatalf("stat: %v", err)
@@ -255,7 +252,7 @@ func TestSubmodules(t *testing.T) {
 		TS:       time.Now(),
 		NewState: gritfs.WorkspaceState{AutoSnapshot: true},
 	}
-	res, err := root.RepoNode.Snapshot(update)
+	res, err := root.Snapshot(update)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,11 +262,11 @@ func TestSubmodules(t *testing.T) {
 		t.Errorf("writing file should have changed commit ID")
 	}
 
-	out := testCommand(t, []string{"log", "-p"}, "", root.RepoNode)
+	out := testCommand(t, []string{"log", "-p"}, "", root)
 	if got, want := string(out), "+blabla\n"; !strings.Contains(got, want) {
 		t.Errorf("got %s, want substr %q", got, want)
 	}
-	testCommand(t, []string{"checkout", tr.CommitID.String()}, "", root.RepoNode)
+	testCommand(t, []string{"checkout", tr.CommitID.String()}, "", root)
 }
 
 func TestSnapshot(t *testing.T) {
@@ -291,7 +288,7 @@ func TestSnapshot(t *testing.T) {
 	root := newTestRoot(t, tr.RepoURL)
 	mntDir := mountTest(t, root)
 
-	testCommand(t, []string{"checkout", tr.CommitID.String()}, "", root.RepoNode)
+	testCommand(t, []string{"checkout", tr.CommitID.String()}, "", root)
 
 	time.Sleep(time.Microsecond) // ensure clock advances
 	res, err := root.Snapshot(&gritfs.WorkspaceUpdate{
@@ -369,7 +366,7 @@ func TestRemount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	root, err := NewCommandServer(cas, gritRepo, "ws")
+	root, err := gritfs.NewRoot(cas, gritRepo, "ws")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,19 +384,19 @@ func TestRemount(t *testing.T) {
 	}
 	defer server.Unmount()
 
-	out := testCommand(t, []string{"wslog"}, "", root.RepoNode)
+	out := testCommand(t, []string{"wslog"}, "", root)
 	if strings.Count(string(out), "initial commit") != 1 {
 		t.Errorf("got %q, want 'initial commit' once", out)
 	}
-	testCommand(t, []string{"checkout", tr.CommitID.String()}, "", root.RepoNode)
+	testCommand(t, []string{"checkout", tr.CommitID.String()}, "", root)
 	content := []byte("different")
 	if err := ioutil.WriteFile(mntDir+"/file.txt", content, 0644); err != nil {
 		t.Fatal(err)
 	}
-	testCommand(t, []string{"snapshot"}, "", root.RepoNode)
+	testCommand(t, []string{"snapshot"}, "", root)
 
 	server.Unmount()
-	root, err = NewCommandServer(cas, gritRepo, "ws")
+	root, err = gritfs.NewRoot(cas, gritRepo, "ws")
 	if err != nil {
 		t.Fatal(err)
 	}
