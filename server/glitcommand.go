@@ -84,7 +84,7 @@ func findRoot(dir string, root *gritfs.RepoNode) (*fs.Inode, string, error) {
 
 const DateTime = "2006-01-02 15:04:05"
 
-func wsLog(gritRepo *repo.Repository, ioc *IOClient, wsname string, maxEntry int) error {
+func wsLog(gritRepo *repo.Repository, call *Call, wsname string, maxEntry int) error {
 	ref, err := gritRepo.Reference(plumbing.ReferenceName("refs/grit/"+wsname), true)
 	wsID := ref.Hash()
 	wsCommit, err := gritRepo.CommitObject(wsID)
@@ -116,10 +116,10 @@ func wsLog(gritRepo *repo.Repository, ioc *IOClient, wsname string, maxEntry int
 
 		lines := strings.Split(checkedOut.Message, "\n")
 
-		ioc.Printf("%s at commit %s - %s\n", wsCommit.Committer.When.Format(DateTime), checkedOut.Hash, lines[0])
-		ioc.Printf("  Reason: %s\n", wsCommit.Message)
-		ioc.Printf("  Metadata ID: %x\n", wsCommit.Hash[:8])
-		ioc.Printf("  Status: %#v\n", status)
+		call.Printf("%s at commit %s - %s\n", wsCommit.Committer.When.Format(DateTime), checkedOut.Hash, lines[0])
+		call.Printf("  Reason: %s\n", wsCommit.Message)
+		call.Printf("  Metadata ID: %x\n", wsCommit.Hash[:8])
+		call.Printf("  Status: %#v\n", status)
 
 		if wsCommit.NumParents() == 1 {
 			break
@@ -142,14 +142,14 @@ func wsLog(gritRepo *repo.Repository, ioc *IOClient, wsname string, maxEntry int
 
 }
 
-func WSLogCommand(ioc *IOClient) error {
+func WSLogCommand(call *Call) error {
 	fs := flag.NewFlagSet("wslog", flag.ContinueOnError)
 	fs.Bool("help", false, "show help")
 	maxEntry := fs.Int("n", 0, "maximum number of entries to show")
-	fs.SetOutput(ioc)
+	fs.SetOutput(call)
 	fs.Usage = usage(fs)
 
-	if err := fs.Parse(ioc.Args); err != nil {
+	if err := fs.Parse(call.Args); err != nil {
 		return err
 	}
 
@@ -160,23 +160,23 @@ func WSLogCommand(ioc *IOClient) error {
 		return fmt.Errorf("need argument")
 	}
 
-	repoNode := ioc.Root.GetRepoNode()
+	repoNode := call.Root.GetRepoNode()
 	repo := repoNode.Repository()
-	if err := wsLog(repo, ioc, repoNode.WorkspaceName(), *maxEntry); err != nil {
+	if err := wsLog(repo, call, repoNode.WorkspaceName(), *maxEntry); err != nil {
 		return err
 	}
 	return nil
 }
 
-func LogCommand(ioc *IOClient) error {
+func LogCommand(call *Call) error {
 	fs := flag.NewFlagSet("log", flag.ContinueOnError)
 	patch := fs.Bool("p", false, "show patches")
 	fs.Bool("help", false, "show help")
 	commitCount := fs.Int("n", 1, "number of commits to show. 0 = unlimited")
-	fs.SetOutput(ioc)
+	fs.SetOutput(call)
 	fs.Usage = usage(fs)
 
-	if err := fs.Parse(ioc.Args); err != nil {
+	if err := fs.Parse(call.Args); err != nil {
 		return fmt.Errorf("flag parse")
 	}
 
@@ -187,7 +187,7 @@ func LogCommand(ioc *IOClient) error {
 		startHash = plumbing.NewHash(args[0])
 		args = args[1:]
 	} else {
-		_, err := ioc.Root.GetRepoNode().Snapshot(&gritfs.WorkspaceUpdate{
+		_, err := call.Root.GetRepoNode().Snapshot(&gritfs.WorkspaceUpdate{
 			Message: "log call",
 			TS:      time.Now(),
 			NewState: gritfs.WorkspaceState{
@@ -199,7 +199,7 @@ func LogCommand(ioc *IOClient) error {
 			return err
 		}
 
-		startHash = ioc.Root.ID()
+		startHash = call.Root.ID()
 	}
 
 	opts := &git.LogOptions{
@@ -214,14 +214,14 @@ func LogCommand(ioc *IOClient) error {
 		opts.PathFilter = newPathFilter(filtered)
 	}
 
-	repo := ioc.Root.GetRepoNode().Repository()
+	repo := call.Root.GetRepoNode().Repository()
 	iter, err := repo.Log(opts)
 	if err != nil {
 		return err
 	}
 
 	if err := iter.ForEach(func(c *object.Commit) error {
-		_, err := ioc.Println("%v", c)
+		_, err := call.Println("%v", c)
 
 		if *patch {
 			parent := &object.Commit{}
@@ -251,19 +251,19 @@ func LogCommand(ioc *IOClient) error {
 				return err
 			}
 
-			chs, err := ioc.Root.GetRepoNode().Repository().DiffRecursiveByCommit(parent, c)
+			chs, err := call.Root.GetRepoNode().Repository().DiffRecursiveByCommit(parent, c)
 			if err != nil {
 				log.Println("patch", parent, c, err)
 				return err
 			}
-			ioc.Println("")
+			call.Println("")
 			p, err := chs.Patch()
 			if err != nil {
 				log.Println("patch", parent, c, err)
 				return err
 			}
 			// should filter patch by paths as well?
-			p.Encode(ioc)
+			p.Encode(call)
 		}
 
 		if *commitCount > 0 {
@@ -282,7 +282,7 @@ func LogCommand(ioc *IOClient) error {
 	return nil
 }
 
-func AmendCommand(ioc *IOClient) error {
+func AmendCommand(call *Call) error {
 	// Update commit
 	wsUpdate := gritfs.WorkspaceUpdate{
 		Message: "before amend command",
@@ -291,18 +291,18 @@ func AmendCommand(ioc *IOClient) error {
 		},
 		TS: time.Now(),
 	}
-	if _, err := ioc.Root.GetRepoNode().Snapshot(&wsUpdate); err != nil {
+	if _, err := call.Root.GetRepoNode().Snapshot(&wsUpdate); err != nil {
 		return err
 	}
 
-	c := ioc.Root.GetRepoNode().GetCommit()
+	c := call.Root.GetRepoNode().GetCommit()
 
 	msg := `# provide a new commit message below.
 # remove the Grit-Commit footer for further edits to
 # create a new commit
 
 ` + c.Message
-	data, err := ioc.Edit("commit-message", []byte(msg))
+	data, err := call.Edit("commit-message", []byte(msg))
 	if err != nil {
 		return err
 	}
@@ -317,14 +317,14 @@ func AmendCommand(ioc *IOClient) error {
 
 	c.Message = strings.Join(lines, "\n")
 
-	return ioc.Root.GetRepoNode().StoreCommit(&c, &gritfs.WorkspaceUpdate{
+	return call.Root.GetRepoNode().StoreCommit(&c, &gritfs.WorkspaceUpdate{
 		TS:      time.Now(),
 		Message: "amend",
 	})
 }
 
-func CommitCommand(ioc *IOClient) error {
-	repoNode := ioc.Root.GetRepoNode()
+func CommitCommand(call *Call) error {
+	repoNode := call.Root.GetRepoNode()
 
 	wsUpdate := gritfs.WorkspaceUpdate{
 		Message: "before commit command",
@@ -338,16 +338,16 @@ func CommitCommand(ioc *IOClient) error {
 		return err
 	}
 	if !snapResult.State.AutoSnapshot {
-		ioc.Printf("No pending files; top commit is %s - %s", snapResult.CheckedOut.Hash, gitutil.Subject(snapResult.CheckedOut))
+		call.Printf("No pending files; top commit is %s - %s", snapResult.CheckedOut.Hash, gitutil.Subject(snapResult.CheckedOut))
 		return nil
 	}
 
 	flagSet := flag.NewFlagSet("commit", flag.ContinueOnError)
 	msg := flagSet.String("m", "", "commit message")
-	flagSet.SetOutput(ioc)
+	flagSet.SetOutput(call)
 	flagSet.Usage = usage(flagSet)
 
-	if err := flagSet.Parse(ioc.Args); err != nil {
+	if err := flagSet.Parse(call.Args); err != nil {
 		return nil // Parse already prints diagnostics.
 	}
 
@@ -359,7 +359,7 @@ func CommitCommand(ioc *IOClient) error {
 	if len(flagSet.Args()) > 0 {
 		var changes []object.TreeEntry
 		for _, a := range flagSet.Args() {
-			p := filepath.Clean(filepath.Join(ioc.Dir, a))
+			p := filepath.Clean(filepath.Join(call.Dir, a))
 			c, err := walkPath(repoNode.EmbeddedInode(), p)
 			if err != nil {
 				return err
@@ -401,7 +401,7 @@ func CommitCommand(ioc *IOClient) error {
 		before := strings.TrimSpace(commit.Message)
 		msg += before
 
-		data, err := ioc.Edit("commit-message", []byte(msg))
+		data, err := call.Edit("commit-message", []byte(msg))
 		if err != nil {
 			return err
 		}
@@ -436,7 +436,7 @@ func CommitCommand(ioc *IOClient) error {
 	return nil
 }
 
-func SnapshotCommand(ioc *IOClient) error {
+func SnapshotCommand(call *Call) error {
 	wsUpdate := gritfs.WorkspaceUpdate{
 		Message: "snapshot command",
 		NewState: gritfs.WorkspaceState{
@@ -444,11 +444,11 @@ func SnapshotCommand(ioc *IOClient) error {
 		},
 		TS: time.Now(),
 	}
-	res, err := ioc.Root.GetRepoNode().Snapshot(&wsUpdate)
+	res, err := call.Root.GetRepoNode().Snapshot(&wsUpdate)
 	if err != nil {
 		return err
 	}
-	ioc.Printf("Recomputed %d hashes\n", res.Recomputed)
+	call.Printf("Recomputed %d hashes\n", res.Recomputed)
 	return nil
 }
 
@@ -461,7 +461,7 @@ var fileModeNames = map[filemode.FileMode]string{
 }
 
 // `dir` is the path leading up to `root`.
-func lsTree(root *fs.Inode, dir string, recursive bool, ioc *IOClient) error {
+func lsTree(root *fs.Inode, dir string, recursive bool, call *Call) error {
 	node, ok := root.Operations().(gritfs.Node)
 	if !ok {
 		return fmt.Errorf("path %q is not a Node", root.Path(nil))
@@ -479,10 +479,10 @@ func lsTree(root *fs.Inode, dir string, recursive bool, ioc *IOClient) error {
 	for _, e := range entries {
 		fn := filepath.Join(dir, e.Name)
 		if recursive && e.Mode == filemode.Dir {
-			lsTree(root.GetChild(e.Name), fn, recursive, ioc)
+			lsTree(root.GetChild(e.Name), fn, recursive, call)
 		} else {
 			// bug - mode -> string prefixes 0.
-			ioc.Println("%s %s %s\t%s", e.Mode.String()[1:], fileModeNames[e.Mode], e.Hash, fn)
+			call.Println("%s %s %s\t%s", e.Mode.String()[1:], fileModeNames[e.Mode], e.Hash, fn)
 		}
 	}
 
@@ -508,18 +508,18 @@ func walkPath(root *fs.Inode, path string) (*fs.Inode, error) {
 	return current, nil
 }
 
-func LsTreeCommand(ioc *IOClient) error {
+func LsTreeCommand(call *Call) error {
 	flagSet := flag.NewFlagSet("ls-tree", flag.ContinueOnError)
 	recursive := flagSet.Bool("r", false, "recursive")
-	flagSet.SetOutput(ioc)
+	flagSet.SetOutput(call)
 	flagSet.Usage = usage(flagSet)
 
-	if err := flagSet.Parse(ioc.Args); err != nil {
+	if err := flagSet.Parse(call.Args); err != nil {
 		return fmt.Errorf("flag parse")
 	}
 
-	inode := ioc.Root.(fs.InodeEmbedder).EmbeddedInode()
-	current, err := walkPath(inode, ioc.Dir)
+	inode := call.Root.(fs.InodeEmbedder).EmbeddedInode()
+	current, err := walkPath(inode, call.Dir)
 	if err != nil {
 		return err
 	}
@@ -533,14 +533,14 @@ func LsTreeCommand(ioc *IOClient) error {
 		return err
 	}
 
-	if err := lsTree(current, arg, *recursive, ioc); err != nil {
+	if err := lsTree(current, arg, *recursive, call); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func find(root *fs.Inode, dir string, nameFilter, typeFilter string, ioc *IOClient) error {
+func find(root *fs.Inode, dir string, nameFilter, typeFilter string, call *Call) error {
 	for k, v := range root.Children() {
 		match := true
 		if nameFilter != "" {
@@ -557,11 +557,11 @@ func find(root *fs.Inode, dir string, nameFilter, typeFilter string, ioc *IOClie
 		}
 
 		if match {
-			ioc.Println("%s", filepath.Join(dir, k))
+			call.Println("%s", filepath.Join(dir, k))
 		}
 
 		if v.IsDir() {
-			if err := find(v, filepath.Join(dir, k), nameFilter, typeFilter, ioc); err != nil {
+			if err := find(v, filepath.Join(dir, k), nameFilter, typeFilter, call); err != nil {
 				return err
 			}
 		}
@@ -569,22 +569,22 @@ func find(root *fs.Inode, dir string, nameFilter, typeFilter string, ioc *IOClie
 	return nil
 }
 
-func FindCommand(ioc *IOClient) error {
+func FindCommand(call *Call) error {
 	flagSet := flag.NewFlagSet("find", flag.ContinueOnError)
 	nameFilter := flagSet.String("name", "", "name glob")
 	typeFilter := flagSet.String("type", "", "filter to type")
-	flagSet.SetOutput(ioc)
+	flagSet.SetOutput(call)
 	flagSet.Usage = usage(flagSet)
-	if err := flagSet.Parse(ioc.Args); err != nil {
+	if err := flagSet.Parse(call.Args); err != nil {
 		return nil // Parse already prints diagnostics.
 	}
 
-	inode := ioc.Root.(fs.InodeEmbedder).EmbeddedInode()
-	current, err := walkPath(inode, ioc.Dir)
+	inode := call.Root.(fs.InodeEmbedder).EmbeddedInode()
+	current, err := walkPath(inode, call.Dir)
 	if err != nil {
 		return err
 	}
-	if err := find(current, "", *nameFilter, *typeFilter, ioc); err != nil {
+	if err := find(current, "", *nameFilter, *typeFilter, call); err != nil {
 		return err
 	}
 
@@ -592,11 +592,11 @@ func FindCommand(ioc *IOClient) error {
 
 }
 
-func CheckoutCommand(ioc *IOClient) error {
+func CheckoutCommand(call *Call) error {
 	flagSet := flag.NewFlagSet("checkout", flag.ContinueOnError)
-	flagSet.SetOutput(ioc)
+	flagSet.SetOutput(call)
 	flagSet.Usage = usage(flagSet)
-	if err := flagSet.Parse(ioc.Args); err != nil {
+	if err := flagSet.Parse(call.Args); err != nil {
 		return fmt.Errorf("flag parse")
 	}
 
@@ -606,11 +606,11 @@ func CheckoutCommand(ioc *IOClient) error {
 	}
 	h := plumbing.NewHash(flagSet.Arg(0))
 
-	if _, err := ioc.Root.GetRepoNode().Repository().FetchCommit(h); err != nil {
+	if _, err := call.Root.GetRepoNode().Repository().FetchCommit(h); err != nil {
 		return err
 	}
 
-	if err := ioc.Root.GetRepoNode().SetID(h, time.Now()); err != nil {
+	if err := call.Root.GetRepoNode().SetID(h, time.Now()); err != nil {
 		return err
 	}
 	return nil
@@ -624,21 +624,21 @@ func visit(n *fs.Inode) {
 }
 
 // For benchmarking.
-func VisitCommand(ioc *IOClient) error {
+func VisitCommand(call *Call) error {
 	flagSet := flag.NewFlagSet("visit", flag.ContinueOnError)
-	flagSet.SetOutput(ioc)
+	flagSet.SetOutput(call)
 	flagSet.Usage = usage(flagSet)
-	if err := flagSet.Parse(ioc.Args); err != nil {
+	if err := flagSet.Parse(call.Args); err != nil {
 		return err
 	}
 
-	node := ioc.Root.GetRepoNode().EmbeddedInode()
+	node := call.Root.GetRepoNode().EmbeddedInode()
 	visit(node)
 	return nil
 
 }
 
-var dispatch = map[string]func(*IOClient) error{
+var dispatch = map[string]func(*Call) error{
 	"log":      LogCommand,
 	"wslog":    WSLogCommand,
 	"amend":    AmendCommand,
@@ -650,42 +650,42 @@ var dispatch = map[string]func(*IOClient) error{
 	"visit":    VisitCommand,
 }
 
-func Usage(ioc *IOClient) error {
-	ioc.Printf("Usage: grit <subcommand>\n\nAvailable subcommands:\n\n")
+func Usage(call *Call) error {
+	call.Printf("Usage: grit <subcommand>\n\nAvailable subcommands:\n\n")
 	var ks []string
 	for k := range dispatch {
 		ks = append(ks, k)
 	}
 	sort.Strings(ks)
 	for _, k := range ks {
-		ioc.Printf("  %s\n", k)
+		call.Printf("  %s\n", k)
 	}
 
-	ioc.Println("")
+	call.Println("")
 	return nil
 }
 
-func RunCommand(ioc *IOClient) error {
-	if len(ioc.Args) == 0 {
-		return Usage(ioc)
+func RunCommand(call *Call) error {
+	if len(call.Args) == 0 {
+		return Usage(call)
 	}
 
-	subcommand := ioc.Args[0]
-	ioc.Args = ioc.Args[1:]
+	subcommand := call.Args[0]
+	call.Args = call.Args[1:]
 
 	fn := dispatch[subcommand]
 	if fn == nil {
-		log.Println(ioc)
+		log.Println(call)
 		return fmt.Errorf("unknown subcommand %q", subcommand)
 	}
 
-	rootInode, dir, err := findRoot(ioc.Dir, ioc.Root.(*gritfs.RepoNode))
+	rootInode, dir, err := findRoot(call.Dir, call.Root.(*gritfs.RepoNode))
 	if err != nil {
 		return err
 	}
 	rootGitNode := rootInode.Operations().(gritfs.Node)
 
-	ioc.Dir = dir
-	ioc.Root = rootGitNode
-	return fn(ioc)
+	call.Dir = dir
+	call.Root = rootGitNode
+	return fn(call)
 }

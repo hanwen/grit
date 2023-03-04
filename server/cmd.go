@@ -97,20 +97,20 @@ func (s *CommandServer) Exec(req *CommandRequest, rep *CommandReply) error {
 		pprof.StartCPUProfile(f)
 		defer pprof.StopCPUProfile()
 	}
-	ioc, err := NewIOClientAPI(req.RPCSocket)
+	iocAPI, err := NewIOClientAPI(req.RPCSocket)
 	if err != nil {
 		return err
 	}
 
-	call := IOClient{
-		IOClientAPI: ioc,
+	call := Call{
+		IOClientAPI: iocAPI,
 		Args:        req.Args,
 		Dir:         req.Dir,
 		Root:        s.root.RepoNode,
 	}
 	if err := RunCommand(&call); err != nil {
 		rep.ExitCode = 1
-		ioc.Write([]byte(err.Error()))
+		call.Write([]byte(err.Error()))
 		err = nil
 	}
 
@@ -165,7 +165,7 @@ type IOClientAPI interface {
 }
 
 // RPC client for talking back to command-line process
-type IOClient struct {
+type Call struct {
 	IOClientAPI
 
 	Args []string
@@ -173,16 +173,16 @@ type IOClient struct {
 	Root gritfs.Node
 }
 
-func (ioc *IOClient) Printf(str string, args ...any) (int, error) {
-	return fmt.Fprintf(ioc.IOClientAPI, str, args...)
+func (call *Call) Printf(str string, args ...any) (int, error) {
+	return fmt.Fprintf(call.IOClientAPI, str, args...)
 }
 
-func (ioc *IOClient) Println(str string, args ...any) (int, error) {
-	return fmt.Fprintf(ioc.IOClientAPI, str+"\n", args...)
+func (call *Call) Println(str string, args ...any) (int, error) {
+	return fmt.Fprintf(call.IOClientAPI, str+"\n", args...)
 }
 
-func (ioc *IOClient) Edit(name string, data []byte) ([]byte, error) {
-	ret, err := ioc.IOClientAPI.Edit(name, data)
+func (call *Call) Edit(name string, data []byte) ([]byte, error) {
+	ret, err := call.IOClientAPI.Edit(name, data)
 
 	trimmed := make([]byte, 0, len(ret))
 	for _, l := range bytes.Split(ret, []byte("\n")) {
@@ -213,21 +213,21 @@ type rpcIOClient struct {
 	client *rpc.Client
 }
 
-func (ioc *rpcIOClient) Edit(name string, data []byte) ([]byte, error) {
+func (call *rpcIOClient) Edit(name string, data []byte) ([]byte, error) {
 	req := EditRequest{Data: data, Name: name}
 	rep := EditReply{}
 
-	err := ioc.client.Call("IOServer.Edit", &req, &rep)
+	err := call.client.Call("IOServer.Edit", &req, &rep)
 	return rep.Data, err
 }
 
-func (ioc *rpcIOClient) Write(data []byte) (n int, err error) {
+func (call *rpcIOClient) Write(data []byte) (n int, err error) {
 	req := WriteRequest{
 		Data: data,
 	}
 
 	rep := WriteReply{}
-	err = ioc.client.Call("IOServer.Write", &req, &rep)
+	err = call.client.Call("IOServer.Write", &req, &rep)
 	return rep.N, err
 }
 

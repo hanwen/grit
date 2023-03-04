@@ -317,13 +317,13 @@ func TestSnapshot(t *testing.T) {
 
 func testCommand(t *testing.T, args []string, dir string, root *gritfs.RepoNode) (out []byte) {
 	tc := &testIOC{}
-	ioc := IOClient{
+	call := Call{
 		IOClientAPI: tc,
 		Args:        args,
 		Dir:         dir,
 		Root:        root,
 	}
-	if err := RunCommand(&ioc); err != nil {
+	if err := RunCommand(&call); err != nil {
 		t.Log(tc.String())
 		t.Fatalf("%s; %v", args, err)
 	}
