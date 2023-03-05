@@ -3,7 +3,6 @@
 * pack loose objects
 
 * upload to gerrit
-* push protocol
 
 * http rate limiting.
 

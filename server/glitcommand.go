@@ -698,7 +698,7 @@ func WSCommand(call *Call) error {
 		if err := root.AddWorkspace(wsName); err != nil {
 			return err
 		}
-		if len(call.Args) > 1 {
+		if len(call.Args) > 2 {
 			c2 := &Call{
 				IOClientAPI: call.IOClientAPI,
 				Dir:         wsName,
