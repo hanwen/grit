@@ -7,17 +7,24 @@ To start the daemon,
 git init --bare ~/tmp/gerrit
 mkdir /tmp/x
 go build ./cmd/fuse/
-./fuse -url https://gerrit.googlesource.com/gerrit -workspace ws1 -repo ~/tmp/gerrit  /tmp/x
+./fuse -url https://gerrit.googlesource.com/gerrit -repo ~/tmp/gerrit  /tmp/x
 ```
 
 Example session:
 
+The `workspace` command manages workspaces
+
+```
+./grit -dir /tmp/x/ workspace create ws1
+./grit -dir /tmp/x/ workspace list
+ws1
+```
 
 `checkout` fetches a revisions and populates the tree.
 ```
-./grit -dir /tmp/x/ checkout 4f326673affe9172ca1c76ffd15af6d120855164
+./grit -dir /tmp/x/ws1 checkout 4f326673affe9172ca1c76ffd15af6d120855164
 
-$ ls /tmp/x/
+$ ls /tmp/x/ws1/
 antlr3  contrib  Documentation  INSTALL  javatests    lib      package.json  polygerrit-ui    prolog       proto      resources           tools        webapp                     WORKSPACE
 BUILD   COPYING  e2e-tests      java     Jenkinsfile  modules  plugins       polymer-bridges  prologtests  README.md  SUBMITTING_PATCHES  version.bzl  web-dev-server.config.mjs  yarn.lock
 ```
@@ -25,7 +32,7 @@ BUILD   COPYING  e2e-tests      java     Jenkinsfile  modules  plugins       pol
 Submodules are populated recursively,
 
 ```
-[hanwen@localhost grit]$ head /tmp/x/modules/jgit/README.md
+[hanwen@localhost grit]$ head /tmp/x/ws1/modules/jgit/README.md
 # Java Git
 
 An implementation of the Git version control system in pure Java.
@@ -34,7 +41,7 @@ An implementation of the Git version control system in pure Java.
 Within the checkout, Git data for submodules is available separately:
 
 ```
-$ cd /tmp/x
+$ cd /tmp/x/ws1
 $ grit log
 commit 4f326673affe9172ca1c76ffd15af6d120855164
 Author: Dhruv Srivastava <dhruvsri@google.com>
