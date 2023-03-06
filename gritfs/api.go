@@ -24,10 +24,6 @@ import (
 	"github.com/hanwen/go-fuse/v2/fs"
 )
 
-// Copyright 2023 Google Inc. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
-
 // SnapshotResult is the result for the public RepoNode.Snapshot method.
 type SnapshotResult struct {
 	Recomputed int
