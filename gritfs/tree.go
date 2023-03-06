@@ -16,6 +16,7 @@ package gritfs
 
 import (
 	"context"
+	"log"
 	"path/filepath"
 	"sync"
 	"syscall"
@@ -272,4 +273,27 @@ func (n *TreeNode) Create(ctx context.Context, name string, flags uint32, mode u
 	n.modTime = time.Now()
 
 	return child, fh, 0, 0
+}
+
+var _ = ((fs.NodeSymlinker)((*TreeNode)(nil)))
+
+func (n *TreeNode) Symlink(ctx context.Context, target, name string, out *fuse.EntryOut) (node *fs.Inode, errno syscall.Errno) {
+	id, err := n.root.repo.SaveBytes([]byte(target))
+	if err != nil {
+		log.Printf("SaveBytes(%q): %v", target, err)
+		return nil, syscall.EIO
+	}
+	bn := &BlobNode{
+		root:    n.root,
+		mode:    filemode.Symlink,
+		modTime: time.Now(),
+		size:    uint64(len(target)),
+		blobID:  id,
+	}
+
+	ch := n.NewPersistentInode(ctx, bn, fs.StableAttr{Mode: fuse.S_IFLNK})
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.modTime = time.Now()
+	return ch, 0
 }
