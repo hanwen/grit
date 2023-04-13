@@ -341,7 +341,6 @@ func (r *Repository) FetchCommit(commitID plumbing.Hash) (commit *object.Commit,
 		return nil, fmt.Errorf("Tree: %v", err)
 	}
 
-	var wg sync.WaitGroup
 	errs := make(chan error, len(mods.Submodules))
 	count := 0
 	for _, submod := range mods.Submodules {
@@ -357,15 +356,14 @@ func (r *Repository) FetchCommit(commitID plumbing.Hash) (commit *object.Commit,
 
 		l := submod
 
-		wg.Add(1)
 		count++
 		go func() {
-			defer wg.Done()
-			err := r.fetchSubmoduleCommit(l, entry.Hash)
+			var err error
+			defer func() { errs <- err }()
+			err = r.fetchSubmoduleCommit(l, entry.Hash)
 			if err != nil {
 				err = fmt.Errorf("fetchSubmoduleCommit(%s): %v", l.Path, err)
 			}
-			errs <- err
 		}()
 	}
 
