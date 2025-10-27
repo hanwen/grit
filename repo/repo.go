@@ -113,6 +113,8 @@ func (r *Repository) SubmoduleConfigByCommit(commit *object.Commit) (*config.Mod
 	// Can't use commit.FindFile(). .gitmodules might be large,
 	// and must be faulted in by calling our BlobObject()
 	// implementation
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	tree, err := commit.Tree()
 	if err != nil {
 		return nil, err
