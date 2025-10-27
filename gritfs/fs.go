@@ -528,7 +528,7 @@ func (r *RepoNode) newGitBlobNode(mode filemode.FileMode) (Node, error) {
 	return bn, nil
 }
 
-func (r *RepoNode) newGitTreeNode(nodePath string) (Node, error) {
+func (r *RepoNode) newGitTreeNode() (Node, error) {
 	ts := time.Now()
 	treeNode := &TreeNode{
 		root:    r,
@@ -538,14 +538,14 @@ func (r *RepoNode) newGitTreeNode(nodePath string) (Node, error) {
 	return treeNode, nil
 }
 
-func (r *RepoNode) newGitNode(mode filemode.FileMode, nodePath string) (Node, error) {
+func (r *RepoNode) newGitNode(mode filemode.FileMode) (Node, error) {
 	switch mode {
 	case filemode.Dir:
-		return r.newGitTreeNode(nodePath)
+		return r.newGitTreeNode()
 	case filemode.Executable, filemode.Regular, filemode.Symlink:
 		return r.newGitBlobNode(mode)
 	default:
-		return nil, fmt.Errorf("unsupported mode %v %q", mode, nodePath)
+		return nil, fmt.Errorf("unsupported mode %v", mode)
 	}
 }
 
