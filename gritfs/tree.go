@@ -273,7 +273,7 @@ func (n *TreeNode) Create(ctx context.Context, name string, flags uint32, mode u
 		return
 	}
 
-	fd, err := syscall.Open(bn.backingFile, int(flags), 0777)
+	fd, err := syscall.Open(bn.backingFile, int(flags)&^syscall.O_EXCL, 0777)
 	if err != nil {
 		errno = err.(syscall.Errno)
 		return
