@@ -236,6 +236,24 @@ func (n *TreeNode) Rmdir(ctx context.Context, name string) syscall.Errno {
 	return 0
 }
 
+var _ fs.NodeMkdirer = (*TreeNode)(nil)
+
+func (n *TreeNode) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	tn := &TreeNode{
+		root:    n.root,
+		modTime: time.Now(),
+		treeID:  emptyTree,
+	}
+
+	child := n.NewPersistentInode(ctx, tn, fs.StableAttr{Mode: syscall.S_IFDIR})
+	n.AddChild(name, child, true)
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.modTime = time.Now()
+	return child, 0
+}
+
 var _ = (fs.NodeCreater)((*TreeNode)(nil))
 
 func (n *TreeNode) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (node *fs.Inode, fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
