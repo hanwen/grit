@@ -69,18 +69,22 @@ func (n *BlobNode) ID() plumbing.Hash {
 	return n.blobID
 }
 
-func (n *BlobNode) setID(id plumbing.Hash, mode filemode.FileMode, state *setIDState) error {
+func (n *BlobNode) SetID(id plumbing.Hash, mode filemode.FileMode, size uint64, ts time.Time) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.blobID = id
-	n.modTime = state.ts
+	n.modTime = ts
 	n.mode = mode
+	n.size = size
+}
 
-	ok := true
-	n.size, ok = n.root.repo.CachedBlobSize(id)
+func (n *BlobNode) setID(id plumbing.Hash, mode filemode.FileMode, state *setIDState) error {
+	size, ok := n.root.repo.CachedBlobSize(id)
 	if !ok {
 		state.missingSizes = append(state.missingSizes, n)
 	}
+
+	n.SetID(id, mode, size, state.ts)
 	return nil
 }
 

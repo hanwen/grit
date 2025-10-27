@@ -73,7 +73,7 @@ func (n *TreeNode) setID(id plumbing.Hash, mode filemode.FileMode, state *setIDS
 	nodePath := n.Path(n.root.EmbeddedInode())
 
 	loadEntry := func(name string, mode filemode.FileMode, hash plumbing.Hash) error {
-		childOps, err := n.root.newGitNode(mode)
+		childOps, err := n.root.NewGitNode(mode)
 		if err != nil {
 			return err
 		}
