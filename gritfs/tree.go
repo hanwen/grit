@@ -27,7 +27,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
-	"github.com/hanwen/gritfs/gitutil"
+	"github.com/hanwen/grit/gitutil"
 )
 
 type TreeNode struct {

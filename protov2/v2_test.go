@@ -20,7 +20,7 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/hanwen/gritfs/gitutil"
+	"github.com/hanwen/grit/gitutil"
 )
 
 func TestObjectInfo(t *testing.T) {

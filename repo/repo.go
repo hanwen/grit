@@ -34,8 +34,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
-	"github.com/hanwen/gritfs/gitutil"
-	"github.com/hanwen/gritfs/protov2"
+	"github.com/hanwen/grit/gitutil"
+	"github.com/hanwen/grit/protov2"
 )
 
 var noSubmodules = &config.Modules{}

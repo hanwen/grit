@@ -20,7 +20,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/hanwen/gritfs/server"
+	"github.com/hanwen/grit/server"
 )
 
 func main() {

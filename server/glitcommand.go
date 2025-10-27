@@ -31,9 +31,9 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
-	"github.com/hanwen/gritfs/gitutil"
-	"github.com/hanwen/gritfs/gritfs"
-	"github.com/hanwen/gritfs/repo"
+	"github.com/hanwen/grit/gitutil"
+	"github.com/hanwen/grit/gritfs"
+	"github.com/hanwen/grit/repo"
 )
 
 func newPathFilter(filter []string) func(s string) bool {

@@ -25,9 +25,9 @@ import (
 	git "github.com/go-git/go-git/v5"
 	fusefs "github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
-	"github.com/hanwen/gritfs/gritfs"
-	"github.com/hanwen/gritfs/repo"
-	"github.com/hanwen/gritfs/server"
+	"github.com/hanwen/grit/gritfs"
+	"github.com/hanwen/grit/repo"
+	"github.com/hanwen/grit/server"
 )
 
 func main() {

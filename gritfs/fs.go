@@ -31,7 +31,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
-	"github.com/hanwen/gritfs/repo"
+	"github.com/hanwen/grit/repo"
 )
 
 var emptyBlob = plumbing.NewHash("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391")
